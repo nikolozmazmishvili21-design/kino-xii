@@ -1,25 +1,28 @@
 import { getFilterOptions } from "../api/sessionsApi.js";
 
-let activeBootPromise = null;
+let filterOptionsPromise = null;
 
-export function bootstrapApp({ signal } = {}) {
-  if (!activeBootPromise) {
-    activeBootPromise = runBootstrap({ signal }).finally(() => {
-      activeBootPromise = null;
+export function bootstrapApp({ restoreSession } = {}) {
+  if (!filterOptionsPromise) {
+    filterOptionsPromise = loadFilterOptions().catch((error) => {
+      filterOptionsPromise = null;
+      throw error;
     });
   }
 
-  return activeBootPromise;
+  // Cache successful filters for this app session, including provider remounts.
+  // Each provider still restores its own authentication state.
+  return Promise.all([filterOptionsPromise, restoreSession?.()]).then(
+    ([filterOptions]) => ({ filterOptions }),
+  );
 }
 
-async function runBootstrap({ signal }) {
-  const filterOptions = await getFilterOptions({ signal });
+async function loadFilterOptions() {
+  const filterOptions = await getFilterOptions();
 
   if (!filterOptions) {
     throw new Error("Filter options response did not contain data.");
   }
 
-  return {
-    filterOptions,
-  };
+  return filterOptions;
 }

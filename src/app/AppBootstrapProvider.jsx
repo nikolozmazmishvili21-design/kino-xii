@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { bootstrapApp } from "./bootstrap.js";
 import { AppBootstrapContext } from "./AppBootstrapContext.js";
+import { useAuth } from "../auth/AuthContext.js";
 
 const INITIAL_STATE = {
   status: "loading",
@@ -9,13 +10,14 @@ const INITIAL_STATE = {
 };
 
 export default function AppBootstrapProvider({ children }) {
+  const { restoreSession } = useAuth();
   const [bootstrapState, setBootstrapState] = useState(INITIAL_STATE);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let ignore = false;
 
-    bootstrapApp()
+    bootstrapApp({ restoreSession })
       .then(({ filterOptions }) => {
         if (ignore) {
           return;
@@ -42,7 +44,7 @@ export default function AppBootstrapProvider({ children }) {
     return () => {
       ignore = true;
     };
-  }, [attempt]);
+  }, [attempt, restoreSession]);
 
   const retry = useCallback(() => {
     setBootstrapState(INITIAL_STATE);

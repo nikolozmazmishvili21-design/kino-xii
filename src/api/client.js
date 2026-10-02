@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "../config.js";
+import { getToken } from "../auth/tokenStorage.js";
 
 export class ApiError extends Error {
   constructor(message, options = {}) {
@@ -91,7 +92,8 @@ export async function apiRequest(
   {
     method = "GET",
     body,
-    token,
+    // token === undefined uses storage; token === null intentionally omits Authorization.
+    token = getToken(),
     signal,
     headers,
   } = {},
