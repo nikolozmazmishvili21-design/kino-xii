@@ -1,0 +1,4335 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Kino XII API",
+    "version": "1.0.0",
+    "description": "REST API for the Kino XII cinema network. This page is the contract: if the frontend and this disagree, this is right.\n\n## Start here\n\n1. `GET /filter-options` once at boot, and cache it. Venues, formats, languages, time bands, sorts, ticket types, age ratings, the 3 seat cap and the 8 minute hold all come from there. Hardcode none of it.\n2. `GET /movies/now-playing`, `/movies/coming-soon` and `/movies/featured` for the home page.\n3. `GET /sessions` for the sessions page. Mirror every filter in the URL.\n4. Booking is three calls: `GET /sessions/{id}/seats`, then `POST /sessions/{id}/holds`, then `POST /orders`.\n\n## Conventions\n\nMoney is Georgian lari as a plain number, so `24` and `14.5` rather than strings or minor units.\n\n## Authentication\n\n`POST /register` and `POST /login` both return a token. Send it on every protected request:\n\n```text\nAuthorization: Bearer 1|abc123...\n```\n\nTo try protected endpoints on this page, hit **Authorize** at the top right and paste a token. `jane@kinoxii.test` with the password `password` is a seeded account with a complete profile and tickets in both tabs.\n\n## Reading the error codes\n\n| Code | What happened | What to do |\n| --- | --- | --- |\n| `401` | Token missing, expired or revoked | Open the login modal, then **replay the action** so the user does not click twice |\n| `403` | The record belongs to another account | Nothing the user can fix; this usually means a bug |\n| `409` | Someone took the seats first | Read `contested`, mark those sold, keep the rest of the selection, refetch the map |\n| `422` + `errors` | Field validation | Map each key in `errors` onto its input |\n| `422`, `message` only | A booking rule blocked it | Show `message` as it comes: incomplete profile, age gate, or an expired hold |\n| `404` | No such record | |\n| `500` | Server fault | Show a retry |\n\nThe two shapes of `422` are the one thing worth getting right early. `errors` present means a form problem; `errors` absent means a rule problem, and the message is already written for the user.\n\n## Rules the API enforces\n\nThese are checked server side, so the UI cannot bypass them by accident. Mirror them in the UI anyway, so the user is never offered something that will fail:\n\n- at most **3 seats** per order;\n- **child tickets** refused on 16+ and 18+ titles;\n- an **age gate** against the profile date of birth;\n- **holds last 8 minutes**, then the seats free themselves;\n- **refunds** close **2 hours** before the session starts;\n- **booking needs a complete profile**: name, mobile number and date of birth."
+  },
+  "servers": [
+    {
+      "url": "https://api.kinoxii.redberryinternship.ge/api",
+      "description": "Production"
+    },
+    {
+      "url": "/api",
+      "description": "This server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 2
+          },
+          "username": {
+            "type": "string",
+            "example": "jane"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "avatar": {
+            "type": "string",
+            "nullable": true,
+            "description": "Public URL, or null"
+          },
+          "fullName": {
+            "type": "string",
+            "nullable": true
+          },
+          "mobileNumber": {
+            "type": "string",
+            "nullable": true,
+            "example": "599123456"
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "age": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Derived from dateOfBirth, so the eligibility notice needs no date maths on the client. Null until the profile is complete."
+          },
+          "preferredVenue": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Venue"
+              }
+            ],
+            "nullable": true
+          },
+          "profileComplete": {
+            "type": "boolean",
+            "description": "False until fullName, mobileNumber and dateOfBirth are all set. Booking is blocked while false."
+          }
+        }
+      },
+      "Venue": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string",
+            "example": "galleria",
+            "description": "Use this value in the `venues[]` filter"
+          },
+          "name": {
+            "type": "string",
+            "example": "Galleria Tbilisi"
+          },
+          "city": {
+            "type": "string",
+            "example": "Tbilisi"
+          },
+          "formats": {
+            "type": "array",
+            "description": "Formats this venue can actually show, which is what narrows the format filter when venues are selected.",
+            "items": {
+              "$ref": "#/components/schemas/Format"
+            }
+          }
+        }
+      },
+      "Format": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string",
+            "example": "max"
+          },
+          "name": {
+            "type": "string",
+            "example": "MAX"
+          },
+          "priceUplift": {
+            "type": "number",
+            "example": 6,
+            "description": "Added to the film base price"
+          }
+        }
+      },
+      "Language": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string",
+            "example": "georgian-dub"
+          },
+          "name": {
+            "type": "string",
+            "example": "Georgian Dub"
+          }
+        }
+      },
+      "Genre": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "example": "Thriller"
+          }
+        }
+      },
+      "AgeRating": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "G",
+              "PG",
+              "12+",
+              "16+",
+              "18+"
+            ]
+          },
+          "minAge": {
+            "type": "integer",
+            "example": 16,
+            "description": "Compare against the signed in user age. If it is lower, disable the session buttons. The API refuses the booking anyway, but the button should not be clickable."
+          },
+          "description": {
+            "type": "string",
+            "description": "Tooltip copy for the rating badge. Render it as given."
+          }
+        }
+      },
+      "TicketType": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string",
+            "enum": [
+              "adult",
+              "child",
+              "student"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "priceRatio": {
+            "type": "number",
+            "example": 0.6,
+            "description": "Multiplied by the session price to get this ticket price. Read it from here rather than hardcoding 0.6 and 0.75."
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "blockedFromRatingAge": {
+            "type": "integer",
+            "nullable": true,
+            "example": 16,
+            "description": "Refused when the film's minAge is at or above this. Child tickets use 16."
+          }
+        }
+      },
+      "Movie": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string",
+            "example": "the-end-of-oak-street-1101383",
+            "description": "Path key for /movies/{slug}"
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "film",
+              "event"
+            ]
+          },
+          "runtimeMinutes": {
+            "type": "integer",
+            "example": 128
+          },
+          "posterUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "backdropUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "releaseDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "isComingSoon": {
+            "type": "boolean",
+            "description": "Coming soon titles have no sessions at all. Clicking one must not open seat selection; offer Notify me instead."
+          },
+          "isFeatured": {
+            "type": "boolean",
+            "description": "Fills the home page hero"
+          },
+          "fromPrice": {
+            "type": "number",
+            "example": 14,
+            "description": "Cheapest upcoming session, for the `from GEL X` label. Falls back to the base price when nothing is scheduled."
+          },
+          "ageRating": {
+            "$ref": "#/components/schemas/AgeRating"
+          },
+          "genres": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Genre"
+            }
+          },
+          "formats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Format"
+            }
+          }
+        }
+      },
+      "MovieDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Movie"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "synopsis": {
+                "type": "string"
+              },
+              "director": {
+                "type": "string",
+                "nullable": true
+              },
+              "cast": {
+                "type": "string",
+                "nullable": true,
+                "example": "Anne Hathaway, Ewan McGregor"
+              },
+              "availableDates": {
+                "type": "array",
+                "description": "Dates with at least one upcoming session, for the day picker",
+                "items": {
+                  "type": "string",
+                  "format": "date"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "time": {
+            "type": "string",
+            "example": "19:30"
+          },
+          "timeBand": {
+            "type": "string",
+            "enum": [
+              "morning",
+              "afternoon",
+              "evening"
+            ],
+            "description": "Which time-of-day filter this session falls in. Precomputed so you do not have to parse the hour."
+          },
+          "price": {
+            "type": "number",
+            "example": 24,
+            "description": "The adult price, already including the format uplift. Child and student scale off it by the ratios in /filter-options."
+          },
+          "seatsLeft": {
+            "type": "integer",
+            "example": 42,
+            "description": "Live count. Excludes seats sold and seats under another user active hold, so it can drop while the page is open."
+          },
+          "isSoldOut": {
+            "type": "boolean",
+            "description": "Disable the card visibly rather than hiding it, so the showtime is still readable."
+          },
+          "hall": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string",
+                "example": "B"
+              }
+            }
+          },
+          "venue": {
+            "$ref": "#/components/schemas/Venue"
+          },
+          "format": {
+            "$ref": "#/components/schemas/Format"
+          },
+          "language": {
+            "$ref": "#/components/schemas/Language"
+          },
+          "movie": {
+            "$ref": "#/components/schemas/Movie"
+          }
+        }
+      },
+      "Seat": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Send this as `seatId` when holding seats. Not the code."
+          },
+          "code": {
+            "type": "string",
+            "example": "E7"
+          },
+          "label": {
+            "type": "string",
+            "example": "7",
+            "description": "Just the number within the row. Put this inside the seat button; `code` is for summaries and tickets."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "available",
+              "sold",
+              "held",
+              "unavailable"
+            ],
+            "description": "`held` is someone else's live hold. `unavailable` is a permanent gap in the plan."
+          },
+          "aisleAfter": {
+            "type": "boolean",
+            "description": "A gangway runs to the right of this seat. Insert a spacer after it when rendering the row. Purely visual: it says nothing about availability, and the positions differ per section."
+          },
+          "isMine": {
+            "type": "boolean",
+            "description": "Part of your own live hold. Show it as selected rather than blocked, so a returning user keeps their selection. Only ever true when the request carried a token."
+          }
+        }
+      },
+      "SeatMap": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "integer"
+          },
+          "hall": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "venue": {
+                "$ref": "#/components/schemas/Venue"
+              }
+            }
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "example": "Stalls"
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "example": "E"
+                      },
+                      "seats": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/Seat"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "SeatHold": {
+        "type": "object",
+        "properties": {
+          "holdId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sessionId": {
+            "type": "integer"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Drive the countdown from this absolute timestamp, not from a local counter, so a backgrounded tab does not drift."
+          },
+          "secondsRemaining": {
+            "type": "integer",
+            "example": 480,
+            "description": "Convenience value at the moment of the response. Useful for the first paint; expiresAt is what to tick against."
+          },
+          "isLive": {
+            "type": "boolean"
+          },
+          "subtotal": {
+            "type": "number",
+            "example": 47
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "seatId": {
+                  "type": "integer"
+                },
+                "code": {
+                  "type": "string",
+                  "example": "E7"
+                },
+                "ticketType": {
+                  "type": "object",
+                  "properties": {
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "price": {
+                  "type": "number",
+                  "example": 15
+                }
+              }
+            }
+          }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "reference": {
+            "type": "string",
+            "example": "KX-7QF2LD",
+            "description": "The order code shown on the confirmation screen. Render the confirmation straight from this response."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "paid",
+              "refunded"
+            ]
+          },
+          "totalPrice": {
+            "type": "number",
+            "example": 47
+          },
+          "paidAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "refundedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "isUpcoming": {
+            "type": "boolean",
+            "description": "Paid, and the session has not started. This is what puts an order in the Upcoming tab rather than Past."
+          },
+          "isRefundable": {
+            "type": "boolean",
+            "description": "Drive the Refund button from this. Already false inside the 2 hour cutoff and once refunded, so never compute the cutoff on the client."
+          },
+          "cardLastFour": {
+            "type": "string",
+            "example": "4242"
+          },
+          "contact": {
+            "type": "object",
+            "properties": {
+              "fullName": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string",
+                "format": "email"
+              },
+              "mobileNumber": {
+                "type": "string"
+              }
+            }
+          },
+          "session": {
+            "$ref": "#/components/schemas/Session"
+          },
+          "tickets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "seatCode": {
+                  "type": "string",
+                  "example": "E7"
+                },
+                "ticketType": {
+                  "type": "object",
+                  "properties": {
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "price": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "The given data was invalid."
+          },
+          "errors": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "example": {
+              "mobileNumber": [
+                "Georgian mobile numbers must start with 5"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthenticated": {
+        "description": "No valid token. Open the login modal and replay the action.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "example": "Unauthenticated."
+                }
+              }
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The record belongs to someone else.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "example": "This action is unauthorized."
+                }
+              }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "No such record.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "example": "Not found."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Field level validation failed. Map `errors` onto the form.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationError"
+            }
+          }
+        }
+      },
+      "BookingBlocked": {
+        "description": "A booking rule was not met: incomplete profile, age restriction, a session that has started, or an expired hold. Show `message` directly.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "example": "Your hold time expired. Please re-select your seats."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "SessionId": {
+        "name": "session",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "integer"
+        },
+        "example": 809
+      },
+      "MovieSlug": {
+        "name": "movie",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "example": "buddy-1514026"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Registration, login, logout and the current user"
+    },
+    {
+      "name": "Profile",
+      "description": "The authenticated user's profile"
+    },
+    {
+      "name": "Catalogue",
+      "description": "Films, both now playing and coming soon"
+    },
+    {
+      "name": "Sessions",
+      "description": "Showtimes, the filter options they are browsed with, and the seat map"
+    },
+    {
+      "name": "Booking",
+      "description": "Seat holds and checkout"
+    },
+    {
+      "name": "Tickets",
+      "description": "My Tickets and refunds"
+    }
+  ],
+  "paths": {
+    "/register": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Register a new account",
+        "description": "Creates the account and signs the user in, returning a token in the same response. There is no separate login step afterwards.\n\nThe new account comes back with `profileComplete: false`. Booking stays blocked until the profile is filled in, so after registering during a protected action, expect to send them to the profile form before the booking can continue.\n\nSent as `multipart/form-data` because of the optional avatar. Note the field is `password_confirmation`, in snake case, which is the one field name here that is not camelCase.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "username",
+                  "email",
+                  "password",
+                  "password_confirmation"
+                ],
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "minLength": 3,
+                    "example": "jane"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "jane@example.com"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 3,
+                    "example": "secret"
+                  },
+                  "password_confirmation": {
+                    "type": "string",
+                    "example": "secret"
+                  },
+                  "avatar": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "jpg, jpeg, png or webp, max 2MB"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user": {
+                          "$ref": "#/components/schemas/User"
+                        },
+                        "token": {
+                          "type": "string",
+                          "example": "1|abc123..."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Log in and receive a token",
+        "description": "Store the token and send it as `Authorization: Bearer <token>` on every protected request.\n\nA `401` here means wrong credentials. Keep the modal open, keep the email filled in and show `message` inside the modal.\n\nA `401` from **any other** endpoint means the token is gone or expired: open the login modal, and once it succeeds replay the action the user was trying to do rather than making them click twice.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "jane@kinoxii.test"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 3,
+                    "example": "password"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user": {
+                          "$ref": "#/components/schemas/User"
+                        },
+                        "token": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong email or password. Keep the modal open and the email filled in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Invalid credentials."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/logout": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Revoke the current token",
+        "description": "Revokes only the token used for this request, so signing out on one device leaves others signed in. Clear your stored token afterwards regardless of the response.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Token revoked"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "The signed in user",
+        "description": "Call this on boot when a stored token exists, to restore the session and get the current `profileComplete` state. A `401` means the stored token is stale: drop it and treat the user as a guest.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      }
+    },
+    "/profile": {
+      "put": {
+        "tags": [
+          "Profile"
+        ],
+        "summary": "Update the profile",
+        "description": "Email is set at registration and cannot be changed here. Sending one is ignored rather than rejected.\n\n### Validation\n\nThe messages in `errors` are the exact strings the brief specifies, so show them as returned rather than writing your own. Mobile number and date of birth each have several distinct messages depending on what is wrong: a number that does not start with 5 gets a different message from one of the wrong length.\n\nSpaces in the mobile number are stripped before validation, so `599 123 456` and `599123456` are both accepted and both stored as 9 digits.\n\n### Why it matters\n\nBooking is blocked until `profileComplete` is true, which needs `fullName`, `mobileNumber` and `dateOfBirth` all present. Use that flag for the yellow dot in the navbar and the banner on the profile page.\n\n`dateOfBirth` also drives the age gate. The response includes the derived `age`, so the eligibility notice ('You are 24, you can buy tickets for all age ratings') can be rendered without doing date maths on the client.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "fullName",
+                  "mobileNumber",
+                  "dateOfBirth"
+                ],
+                "properties": {
+                  "fullName": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 50,
+                    "example": "Jane Dolidze"
+                  },
+                  "mobileNumber": {
+                    "type": "string",
+                    "pattern": "^5\\d{8}$",
+                    "example": "599 123 456",
+                    "description": "9 digits starting with 5"
+                  },
+                  "dateOfBirth": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "1998-05-12",
+                    "description": "Must be at least 12 years ago"
+                  },
+                  "preferredVenueId": {
+                    "type": "integer",
+                    "nullable": true
+                  },
+                  "avatar": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "jpg, jpeg, png or webp, max 2MB"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Profile saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/filter-options": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Everything the sidebar and booking modal need",
+        "description": "Fetch this once when the app boots and cache it. It is the source of truth for every list the UI renders.\n\nNothing here should be hardcoded in the frontend: venues, formats, languages, time bands, sort options, ticket types, age ratings, the seat cap and the hold duration all come from here. If an admin adds a venue or changes the child ticket ratio, your UI picks it up without a deploy.\n\n`venues[].formats` is what each venue can actually show, which is what you narrow the format filter with when venues are selected.\n\n`maxSeatsPerOrder` and `holdMinutes` drive the seat cap notice and the countdown, so read them rather than writing 3 and 8 into your code.",
+        "responses": {
+          "200": {
+            "description": "Filter options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "venues": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Venue"
+                          }
+                        },
+                        "formats": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Format"
+                          }
+                        },
+                        "languages": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Language"
+                          }
+                        },
+                        "timeBands": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "example": "evening"
+                              },
+                              "label": {
+                                "type": "string",
+                                "example": "Evening (after 18:00)"
+                              }
+                            }
+                          }
+                        },
+                        "sorts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "example": "price_asc"
+                              },
+                              "label": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "ticketTypes": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/TicketType"
+                          }
+                        },
+                        "ageRatings": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/AgeRating"
+                          }
+                        },
+                        "maxSeatsPerOrder": {
+                          "type": "integer",
+                          "example": 3
+                        },
+                        "holdMinutes": {
+                          "type": "integer",
+                          "example": 8
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "venues": [
+                      {
+                        "id": 2,
+                        "slug": "batumi",
+                        "name": "Batumi Boulevard",
+                        "city": "Batumi",
+                        "formats": [
+                          {
+                            "id": 3,
+                            "slug": "atmos",
+                            "name": "ATMOS",
+                            "priceUplift": 4
+                          },
+                          {
+                            "id": 2,
+                            "slug": "max",
+                            "name": "MAX",
+                            "priceUplift": 6
+                          },
+                          {
+                            "id": 1,
+                            "slug": "standard",
+                            "name": "Standard",
+                            "priceUplift": 0
+                          }
+                        ]
+                      },
+                      {
+                        "id": 1,
+                        "slug": "galleria",
+                        "name": "Galleria Tbilisi",
+                        "city": "Tbilisi",
+                        "formats": [
+                          {
+                            "id": 3,
+                            "slug": "atmos",
+                            "name": "ATMOS",
+                            "priceUplift": 4
+                          },
+                          {
+                            "id": 2,
+                            "slug": "max",
+                            "name": "MAX",
+                            "priceUplift": 6
+                          },
+                          {
+                            "id": 5,
+                            "slug": "motion",
+                            "name": "MOTION",
+                            "priceUplift": 8
+                          },
+                          {
+                            "id": 4,
+                            "slug": "panorama",
+                            "name": "PANORAMA",
+                            "priceUplift": 5
+                          },
+                          {
+                            "id": 1,
+                            "slug": "standard",
+                            "name": "Standard",
+                            "priceUplift": 0
+                          }
+                        ]
+                      },
+                      {
+                        "id": 3,
+                        "slug": "rustaveli",
+                        "name": "Rustaveli Palace",
+                        "city": "Tbilisi",
+                        "formats": [
+                          {
+                            "id": 3,
+                            "slug": "atmos",
+                            "name": "ATMOS",
+                            "priceUplift": 4
+                          },
+                          {
+                            "id": 4,
+                            "slug": "panorama",
+                            "name": "PANORAMA",
+                            "priceUplift": 5
+                          },
+                          {
+                            "id": 1,
+                            "slug": "standard",
+                            "name": "Standard",
+                            "priceUplift": 0
+                          }
+                        ]
+                      },
+                      {
+                        "id": 4,
+                        "slug": "vake",
+                        "name": "Vake Park",
+                        "city": "Tbilisi",
+                        "formats": [
+                          {
+                            "id": 2,
+                            "slug": "max",
+                            "name": "MAX",
+                            "priceUplift": 6
+                          },
+                          {
+                            "id": 5,
+                            "slug": "motion",
+                            "name": "MOTION",
+                            "priceUplift": 8
+                          },
+                          {
+                            "id": 1,
+                            "slug": "standard",
+                            "name": "Standard",
+                            "priceUplift": 0
+                          }
+                        ]
+                      }
+                    ],
+                    "formats": [
+                      {
+                        "id": 1,
+                        "slug": "standard",
+                        "name": "Standard",
+                        "priceUplift": 0
+                      },
+                      {
+                        "id": 2,
+                        "slug": "max",
+                        "name": "MAX",
+                        "priceUplift": 6
+                      },
+                      {
+                        "id": 3,
+                        "slug": "atmos",
+                        "name": "ATMOS",
+                        "priceUplift": 4
+                      },
+                      {
+                        "id": 4,
+                        "slug": "panorama",
+                        "name": "PANORAMA",
+                        "priceUplift": 5
+                      },
+                      {
+                        "id": 5,
+                        "slug": "motion",
+                        "name": "MOTION",
+                        "priceUplift": 8
+                      }
+                    ],
+                    "languages": [
+                      {
+                        "id": 1,
+                        "slug": "georgian-dub",
+                        "name": "Georgian Dub"
+                      },
+                      {
+                        "id": 2,
+                        "slug": "georgian-subtitles",
+                        "name": "Georgian Subtitles"
+                      },
+                      {
+                        "id": 3,
+                        "slug": "original-subtitles",
+                        "name": "Original with Subtitles"
+                      },
+                      {
+                        "id": 4,
+                        "slug": "russian-dub",
+                        "name": "Russian Dub"
+                      }
+                    ],
+                    "timeBands": [
+                      {
+                        "id": "morning",
+                        "label": "Morning (before 12:00)"
+                      },
+                      {
+                        "id": "afternoon",
+                        "label": "Afternoon (12:00 - 18:00)"
+                      },
+                      {
+                        "id": "evening",
+                        "label": "Evening (after 18:00)"
+                      }
+                    ],
+                    "sorts": [
+                      {
+                        "id": "time_asc",
+                        "label": "Showtime: earliest first"
+                      },
+                      {
+                        "id": "time_desc",
+                        "label": "Showtime: latest first"
+                      },
+                      {
+                        "id": "price_asc",
+                        "label": "Price: low to high"
+                      },
+                      {
+                        "id": "price_desc",
+                        "label": "Price: high to low"
+                      },
+                      {
+                        "id": "title_asc",
+                        "label": "Title: A-Z"
+                      }
+                    ],
+                    "ticketTypes": [
+                      {
+                        "id": 1,
+                        "slug": "adult",
+                        "name": "Adult",
+                        "priceRatio": 1,
+                        "note": null,
+                        "blockedFromRatingAge": null
+                      },
+                      {
+                        "id": 2,
+                        "slug": "child",
+                        "name": "Child",
+                        "priceRatio": 0.6,
+                        "note": "Not available for 16+ or 18+ titles.",
+                        "blockedFromRatingAge": 16
+                      },
+                      {
+                        "id": 3,
+                        "slug": "student",
+                        "name": "Student",
+                        "priceRatio": 0.75,
+                        "note": "Valid student ID required at entry.",
+                        "blockedFromRatingAge": null
+                      }
+                    ],
+                    "ageRatings": [
+                      {
+                        "code": "G",
+                        "minAge": 0,
+                        "description": "Suitable for all ages. No age check applies at the door."
+                      },
+                      {
+                        "code": "PG",
+                        "minAge": 0,
+                        "description": "Parental guidance advised. Younger viewers may need an adult present."
+                      },
+                      {
+                        "code": "12+",
+                        "minAge": 12,
+                        "description": "Not recommended for under-12s. Tickets require an account aged 12 or over."
+                      },
+                      {
+                        "code": "16+",
+                        "minAge": 16,
+                        "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                      },
+                      {
+                        "code": "18+",
+                        "minAge": 18,
+                        "description": "Restricted to viewers aged 18 and over. Photo ID may be requested at the door."
+                      }
+                    ],
+                    "maxSeatsPerOrder": 3,
+                    "holdMinutes": 8
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "tags": [
+          "Catalogue"
+        ],
+        "summary": "Search titles",
+        "description": "For the header typeahead. Matches on title and returns at most 6 results.\n\nA blank query returns an empty array rather than the whole catalogue, so an empty input needs no special case. Debounce before calling it.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "example": "Budd"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Up to 6 matches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Movie"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": 23,
+                      "slug": "buddy-1514026",
+                      "title": "Buddy",
+                      "kind": "film",
+                      "runtimeMinutes": 95,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/szMG36D2cIxeQ7i5zRQbq0DnNDe.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/ytoLEl5yDaxB8AtZ52uKWjaQ9ql.jpg",
+                      "releaseDate": "2026-08-27",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": false,
+                      "fromPrice": 12,
+                      "ageRating": {
+                        "code": "16+",
+                        "minAge": 16,
+                        "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                      },
+                      "genres": [
+                        {
+                          "id": 4,
+                          "slug": "horror",
+                          "name": "Horror"
+                        },
+                        {
+                          "id": 6,
+                          "slug": "comedy",
+                          "name": "Comedy"
+                        },
+                        {
+                          "id": 12,
+                          "slug": "fantasy",
+                          "name": "Fantasy"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 4,
+                          "slug": "panorama",
+                          "name": "PANORAMA",
+                          "priceUplift": 5
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/movies/now-playing": {
+      "get": {
+        "tags": [
+          "Catalogue"
+        ],
+        "summary": "All films currently showing",
+        "description": "Everything on release right now, alphabetical. Pass `limit` for the home grid; leave it off for the full catalogue.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Cap the number returned, for the home grid"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Now playing. The array holds every matching title, not one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Movie"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": 23,
+                      "slug": "buddy-1514026",
+                      "title": "Buddy",
+                      "kind": "film",
+                      "runtimeMinutes": 95,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/szMG36D2cIxeQ7i5zRQbq0DnNDe.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/ytoLEl5yDaxB8AtZ52uKWjaQ9ql.jpg",
+                      "releaseDate": "2026-08-27",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": false,
+                      "fromPrice": 12,
+                      "ageRating": {
+                        "code": "16+",
+                        "minAge": 16,
+                        "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                      },
+                      "genres": [
+                        {
+                          "id": 4,
+                          "slug": "horror",
+                          "name": "Horror"
+                        },
+                        {
+                          "id": 6,
+                          "slug": "comedy",
+                          "name": "Comedy"
+                        },
+                        {
+                          "id": 12,
+                          "slug": "fantasy",
+                          "name": "Fantasy"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 4,
+                          "slug": "panorama",
+                          "name": "PANORAMA",
+                          "priceUplift": 5
+                        }
+                      ]
+                    },
+                    {
+                      "id": 21,
+                      "slug": "cars-920",
+                      "title": "Cars",
+                      "kind": "film",
+                      "runtimeMinutes": 117,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/2Touk3m5gzsqr1VsvxypdyHY5ci.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/sOLgkBKf1gjMRc4yXxM5aciXdfr.jpg",
+                      "releaseDate": "2006-06-08",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": false,
+                      "fromPrice": 14,
+                      "ageRating": {
+                        "code": "PG",
+                        "minAge": 0,
+                        "description": "Parental guidance advised. Younger viewers may need an adult present."
+                      },
+                      "genres": [
+                        {
+                          "id": 11,
+                          "slug": "animation",
+                          "name": "Animation"
+                        },
+                        {
+                          "id": 5,
+                          "slug": "adventure",
+                          "name": "Adventure"
+                        },
+                        {
+                          "id": 6,
+                          "slug": "comedy",
+                          "name": "Comedy"
+                        },
+                        {
+                          "id": 7,
+                          "slug": "family",
+                          "name": "Family"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 2,
+                          "slug": "max",
+                          "name": "MAX",
+                          "priceUplift": 6
+                        },
+                        {
+                          "id": 4,
+                          "slug": "panorama",
+                          "name": "PANORAMA",
+                          "priceUplift": 5
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/movies/coming-soon": {
+      "get": {
+        "tags": [
+          "Catalogue"
+        ],
+        "summary": "All unreleased films",
+        "description": "These have no sessions. Clicking one must not open seat selection.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Coming soon. The array holds every matching title, not one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Movie"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": 29,
+                      "slug": "princess-mononoke-128",
+                      "title": "Princess Mononoke",
+                      "kind": "film",
+                      "runtimeMinutes": 134,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/cMYCDADoLKLbB83g4WnJegaZimC.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/gl0jzn4BupSbL2qMVeqrjKkF9Js.jpg",
+                      "releaseDate": "1997-07-12",
+                      "isComingSoon": true,
+                      "isNotified": false,
+                      "isFeatured": false,
+                      "fromPrice": 16,
+                      "ageRating": {
+                        "code": "PG",
+                        "minAge": 0,
+                        "description": "Parental guidance advised. Younger viewers may need an adult present."
+                      },
+                      "genres": [
+                        {
+                          "id": 5,
+                          "slug": "adventure",
+                          "name": "Adventure"
+                        },
+                        {
+                          "id": 12,
+                          "slug": "fantasy",
+                          "name": "Fantasy"
+                        },
+                        {
+                          "id": 11,
+                          "slug": "animation",
+                          "name": "Animation"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 2,
+                          "slug": "max",
+                          "name": "MAX",
+                          "priceUplift": 6
+                        }
+                      ]
+                    },
+                    {
+                      "id": 32,
+                      "slug": "pans-labyrinth-1417",
+                      "title": "Pan's Labyrinth",
+                      "kind": "film",
+                      "runtimeMinutes": 118,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/7wb2Ldp0oAx1lcZvffq9RfWoI2h.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/6G6nqSW9S7EHA9HrYl0Z8uo2H7f.jpg",
+                      "releaseDate": "2006-10-11",
+                      "isComingSoon": true,
+                      "isNotified": false,
+                      "isFeatured": false,
+                      "fromPrice": 14,
+                      "ageRating": {
+                        "code": "16+",
+                        "minAge": 16,
+                        "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                      },
+                      "genres": [
+                        {
+                          "id": 12,
+                          "slug": "fantasy",
+                          "name": "Fantasy"
+                        },
+                        {
+                          "id": 9,
+                          "slug": "drama",
+                          "name": "Drama"
+                        },
+                        {
+                          "id": 15,
+                          "slug": "war",
+                          "name": "War"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 3,
+                          "slug": "atmos",
+                          "name": "ATMOS",
+                          "priceUplift": 4
+                        },
+                        {
+                          "id": 4,
+                          "slug": "panorama",
+                          "name": "PANORAMA",
+                          "priceUplift": 5
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/movies/featured": {
+      "get": {
+        "tags": [
+          "Catalogue"
+        ],
+        "summary": "Hero titles for the home page carousel",
+        "description": "The handful of titles flagged as featured, for the animated hero. A subset of now playing, so they are bookable.",
+        "responses": {
+          "200": {
+            "description": "Featured films. The array holds every matching title, not one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Movie"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": 1,
+                      "slug": "the-end-of-oak-street-1101383",
+                      "title": "The End of Oak Street",
+                      "kind": "film",
+                      "runtimeMinutes": 100,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/fYXqpgPmHMphSF2W30GbTeJVIa5.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/b9q9VmbXDvJmTziRqkwdEmFdwhr.jpg",
+                      "releaseDate": "2026-08-12",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": true,
+                      "fromPrice": 14,
+                      "ageRating": {
+                        "code": "12+",
+                        "minAge": 12,
+                        "description": "Not recommended for under-12s. Tickets require an account aged 12 or over."
+                      },
+                      "genres": [
+                        {
+                          "id": 1,
+                          "slug": "science-fiction",
+                          "name": "Science Fiction"
+                        },
+                        {
+                          "id": 2,
+                          "slug": "mystery",
+                          "name": "Mystery"
+                        },
+                        {
+                          "id": 3,
+                          "slug": "thriller",
+                          "name": "Thriller"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 3,
+                          "slug": "atmos",
+                          "name": "ATMOS",
+                          "priceUplift": 4
+                        },
+                        {
+                          "id": 5,
+                          "slug": "motion",
+                          "name": "MOTION",
+                          "priceUplift": 8
+                        }
+                      ]
+                    },
+                    {
+                      "id": 2,
+                      "slug": "resident-evil-1423191",
+                      "title": "Resident Evil",
+                      "kind": "film",
+                      "runtimeMinutes": 95,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/i7UyjfPio0VFHB9rBUZSFyhOoM8.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/1CIaRYKf3zg2Xyce1CSfCMg2Vfw.jpg",
+                      "releaseDate": "2026-09-16",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": true,
+                      "fromPrice": 12,
+                      "ageRating": {
+                        "code": "16+",
+                        "minAge": 16,
+                        "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                      },
+                      "genres": [
+                        {
+                          "id": 4,
+                          "slug": "horror",
+                          "name": "Horror"
+                        },
+                        {
+                          "id": 1,
+                          "slug": "science-fiction",
+                          "name": "Science Fiction"
+                        },
+                        {
+                          "id": 5,
+                          "slug": "adventure",
+                          "name": "Adventure"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 3,
+                          "slug": "atmos",
+                          "name": "ATMOS",
+                          "priceUplift": 4
+                        },
+                        {
+                          "id": 5,
+                          "slug": "motion",
+                          "name": "MOTION",
+                          "priceUplift": 8
+                        }
+                      ]
+                    },
+                    {
+                      "id": 3,
+                      "slug": "coyote-vs-acme-1204680",
+                      "title": "Coyote vs. Acme",
+                      "kind": "film",
+                      "runtimeMinutes": 103,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/kYDCl2y0VPvhT5eYWbMRInPoB03.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/7GOW6jod9lLurW5utokAatxg7ql.jpg",
+                      "releaseDate": "2026-08-20",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": true,
+                      "fromPrice": 14,
+                      "ageRating": {
+                        "code": "PG",
+                        "minAge": 0,
+                        "description": "Parental guidance advised. Younger viewers may need an adult present."
+                      },
+                      "genres": [
+                        {
+                          "id": 6,
+                          "slug": "comedy",
+                          "name": "Comedy"
+                        },
+                        {
+                          "id": 5,
+                          "slug": "adventure",
+                          "name": "Adventure"
+                        },
+                        {
+                          "id": 7,
+                          "slug": "family",
+                          "name": "Family"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 2,
+                          "slug": "max",
+                          "name": "MAX",
+                          "priceUplift": 6
+                        },
+                        {
+                          "id": 4,
+                          "slug": "panorama",
+                          "name": "PANORAMA",
+                          "priceUplift": 5
+                        }
+                      ]
+                    },
+                    {
+                      "id": 4,
+                      "slug": "colony-1375646",
+                      "title": "Colony",
+                      "kind": "film",
+                      "runtimeMinutes": 123,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/tN799oUR0f1gUKDYdMNrDaY7I51.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/hpBGCnzOvdtQoMyE48gvwp2y5yx.jpg",
+                      "releaseDate": "2026-05-21",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": true,
+                      "fromPrice": 16,
+                      "ageRating": {
+                        "code": "16+",
+                        "minAge": 16,
+                        "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                      },
+                      "genres": [
+                        {
+                          "id": 8,
+                          "slug": "action",
+                          "name": "Action"
+                        },
+                        {
+                          "id": 4,
+                          "slug": "horror",
+                          "name": "Horror"
+                        },
+                        {
+                          "id": 1,
+                          "slug": "science-fiction",
+                          "name": "Science Fiction"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 4,
+                          "slug": "panorama",
+                          "name": "PANORAMA",
+                          "priceUplift": 5
+                        },
+                        {
+                          "id": 5,
+                          "slug": "motion",
+                          "name": "MOTION",
+                          "priceUplift": 8
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/movies/{movie}": {
+      "get": {
+        "tags": [
+          "Catalogue"
+        ],
+        "summary": "One film, with everything the details page shows",
+        "description": "Everything the details page needs in one call.\n\n`availableDates` lists only the dates this film actually has upcoming sessions on, so the 7 day picker can disable the empty ones instead of showing a day that returns nothing. Feed a value from it into `GET /movies/{movie}/sessions`.\n\n`ageRating.description` is tooltip copy for the badge, and `ageRating.minAge` is what you compare the signed in user's `age` against to decide whether to disable the session buttons.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MovieSlug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Film detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MovieDetail"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "id": 23,
+                    "slug": "buddy-1514026",
+                    "title": "Buddy",
+                    "kind": "film",
+                    "runtimeMinutes": 95,
+                    "posterUrl": "https://image.tmdb.org/t/p/w500/szMG36D2cIxeQ7i5zRQbq0DnNDe.jpg",
+                    "backdropUrl": "https://image.tmdb.org/t/p/w1280/ytoLEl5yDaxB8AtZ52uKWjaQ9ql.jpg",
+                    "releaseDate": "2026-08-27",
+                    "isComingSoon": false,
+                    "isNotified": false,
+                    "isFeatured": false,
+                    "fromPrice": 12,
+                    "ageRating": {
+                      "code": "16+",
+                      "minAge": 16,
+                      "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                    },
+                    "genres": [
+                      {
+                        "id": 4,
+                        "slug": "horror",
+                        "name": "Horror"
+                      },
+                      {
+                        "id": 6,
+                        "slug": "comedy",
+                        "name": "Comedy"
+                      },
+                      {
+                        "id": 12,
+                        "slug": "fantasy",
+                        "name": "Fantasy"
+                      }
+                    ],
+                    "formats": [
+                      {
+                        "id": 4,
+                        "slug": "panorama",
+                        "name": "PANORAMA",
+                        "priceUplift": 5
+                      }
+                    ],
+                    "synopsis": "A magical, singing orange unicorn holds his cast hostage in a surreal TV-show dimension, as he becomes more and more demented.",
+                    "director": "Casper Kelly",
+                    "cast": "Keegan-Michael Key, Cristin Milioti, Delaney Quinn",
+                    "availableDates": [
+                      "2026-10-02",
+                      "2026-10-03",
+                      "2026-10-04",
+                      "2026-10-05",
+                      "2026-10-06",
+                      "2026-10-07",
+                      "2026-10-08",
+                      "2026-10-09",
+                      "2026-10-10",
+                      "2026-10-11",
+                      "2026-10-12",
+                      "2026-10-13",
+                      "2026-10-14",
+                      "2026-10-15"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/movies/{movie}/sessions": {
+      "get": {
+        "tags": [
+          "Catalogue"
+        ],
+        "summary": "A film's sessions on one date, grouped by venue",
+        "description": "The showtimes under the details page date picker, already grouped by venue.\n\n`date` defaults to today. A coming soon title returns an empty array on every date, because those have no sessions at all.\n\nEach session carries its own `seatsLeft` and `isSoldOut`, so the buttons can be disabled without a second call.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MovieSlug"
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Defaults to today",
+            "example": "2026-10-02"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions grouped by venue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "venue": {
+                            "$ref": "#/components/schemas/Venue"
+                          },
+                          "sessions": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/components/schemas/Session"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "venue": {
+                        "id": 2,
+                        "slug": "batumi",
+                        "name": "Batumi Boulevard",
+                        "city": "Batumi"
+                      },
+                      "sessions": [
+                        {
+                          "id": 855,
+                          "startsAt": "2026-10-02T16:45:00+00:00",
+                          "date": "2026-10-02",
+                          "time": "16:45",
+                          "timeBand": "afternoon",
+                          "price": 12,
+                          "seatsLeft": 123,
+                          "isSoldOut": false,
+                          "hall": {
+                            "id": 8,
+                            "name": "D",
+                            "venue": {
+                              "id": 2,
+                              "slug": "batumi",
+                              "name": "Batumi Boulevard",
+                              "city": "Batumi"
+                            }
+                          },
+                          "venue": {
+                            "id": 2,
+                            "slug": "batumi",
+                            "name": "Batumi Boulevard",
+                            "city": "Batumi"
+                          },
+                          "format": {
+                            "id": 1,
+                            "slug": "standard",
+                            "name": "Standard",
+                            "priceUplift": 0
+                          },
+                          "language": {
+                            "id": 1,
+                            "slug": "georgian-dub",
+                            "name": "Georgian Dub"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/movies/{movie}/notify": {
+      "post": {
+        "tags": [
+          "Catalogue"
+        ],
+        "summary": "Notify me when this title opens",
+        "description": "Subscribes the signed in user to a Coming Soon title.\n\nSubscribing twice is a no-op that still returns `201`, so the button never has to track whether it has already been pressed and a double click is harmless.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MovieSlug"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Subscribed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "movieId": {
+                          "type": "integer"
+                        },
+                        "subscribed": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/sessions": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "The sessions list",
+        "description": "Every showing on one date that matches the filters, grouped under its film. This backs the sessions page.\n\n### Grouping and pagination\n\n`data` is an array of `{ movie, sessions }` groups, one per film, with that film's showtimes already sorted by start time. Pagination counts **films, not sessions**: 10 films per page, which is what `meta.lastPage` is over. A page can therefore hold far more than 10 sessions.\n\n`meta.totalSessions` is the number for the 'Showing X sessions' counter. `meta.totalMovies` is what the pager is dividing up.\n\n### Filters\n\nArray filters take slugs, not ids, because slugs are what belong in a URL. Get the valid values from `GET /filter-options`.\n\nEvery filter is an AND against the others and an OR within itself: `venues[]=galleria&venues[]=vake&formats[]=max` means *(Galleria or Vake) and MAX*.\n\n`date` defaults to today. There is always exactly one date in play, which is why it is a single value and the others are arrays.\n\n### Putting it in the URL\n\nEvery parameter maps straight onto a query string value, so the whole view can live in the address bar and deep links, refreshes and back and forward all work:\n\n```text\n/sessions?venues[]=galleria&venues[]=vake&date=2026-11-14&formats[]=max&sort=price_asc&page=2\n```\n\nTwo things to get right: changing any filter or the sort must reset `page` to 1, and selecting venues should narrow the format list to the formats those venues actually have, dropping any selected format they do not (`venue.formats` tells you).\n\n### Rendering the cards\n\nA session with `isSoldOut: true` should be visibly disabled rather than hidden, so the showtime is still legible. `seatsLeft` is live and counts both sold seats and seats under someone else's hold.",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Defaults to today"
+          },
+          {
+            "name": "venues[]",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Venue slugs",
+            "example": "galleria"
+          },
+          {
+            "name": "formats[]",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Format slugs",
+            "example": "max"
+          },
+          {
+            "name": "languages[]",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Language slugs"
+          },
+          {
+            "name": "bands[]",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "morning",
+                  "afternoon",
+                  "evening"
+                ]
+              }
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Matches the film title"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "time_asc",
+                "time_desc",
+                "price_asc",
+                "price_desc",
+                "title_asc"
+              ]
+            },
+            "description": "Defaults to time_asc"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grouped sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "movie": {
+                            "$ref": "#/components/schemas/Movie"
+                          },
+                          "sessions": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/components/schemas/Session"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "currentPage": {
+                          "type": "integer"
+                        },
+                        "lastPage": {
+                          "type": "integer"
+                        },
+                        "perPage": {
+                          "type": "integer",
+                          "example": 10,
+                          "description": "Films per page, not sessions"
+                        },
+                        "totalSessions": {
+                          "type": "integer",
+                          "description": "Drives the \"Showing X sessions\" counter"
+                        },
+                        "totalMovies": {
+                          "type": "integer"
+                        },
+                        "date": {
+                          "type": "string",
+                          "format": "date"
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "movie": {
+                        "id": 8,
+                        "slug": "hope-1058424",
+                        "title": "Hope",
+                        "kind": "film",
+                        "runtimeMinutes": 157,
+                        "posterUrl": "https://image.tmdb.org/t/p/w500/1n37BJchWHLiSYQkuFxe5KjB951.jpg",
+                        "backdropUrl": "https://image.tmdb.org/t/p/w1280/hrCTKrc3Tz2wbPOt5rcrlAhqF11.jpg",
+                        "releaseDate": "2026-07-15",
+                        "isComingSoon": false,
+                        "isNotified": false,
+                        "isFeatured": false,
+                        "fromPrice": 18,
+                        "ageRating": {
+                          "code": "16+",
+                          "minAge": 16,
+                          "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                        },
+                        "genres": [
+                          {
+                            "id": 1,
+                            "slug": "science-fiction",
+                            "name": "Science Fiction"
+                          },
+                          {
+                            "id": 2,
+                            "slug": "mystery",
+                            "name": "Mystery"
+                          },
+                          {
+                            "id": 8,
+                            "slug": "action",
+                            "name": "Action"
+                          }
+                        ],
+                        "formats": [
+                          {
+                            "id": 2,
+                            "slug": "max",
+                            "name": "MAX",
+                            "priceUplift": 6
+                          },
+                          {
+                            "id": 4,
+                            "slug": "panorama",
+                            "name": "PANORAMA",
+                            "priceUplift": 5
+                          }
+                        ]
+                      },
+                      "sessions": [
+                        {
+                          "id": 809,
+                          "startsAt": "2026-10-02T10:00:00+00:00",
+                          "date": "2026-10-02",
+                          "time": "10:00",
+                          "timeBand": "morning",
+                          "price": 18,
+                          "seatsLeft": 123,
+                          "isSoldOut": false,
+                          "hall": {
+                            "id": 8,
+                            "name": "D",
+                            "venue": {
+                              "id": 2,
+                              "slug": "batumi",
+                              "name": "Batumi Boulevard",
+                              "city": "Batumi"
+                            }
+                          },
+                          "venue": {
+                            "id": 2,
+                            "slug": "batumi",
+                            "name": "Batumi Boulevard",
+                            "city": "Batumi"
+                          },
+                          "format": {
+                            "id": 1,
+                            "slug": "standard",
+                            "name": "Standard",
+                            "priceUplift": 0
+                          },
+                          "language": {
+                            "id": 1,
+                            "slug": "georgian-dub",
+                            "name": "Georgian Dub"
+                          },
+                          "movie": {
+                            "id": 8,
+                            "slug": "hope-1058424",
+                            "title": "Hope",
+                            "kind": "film",
+                            "runtimeMinutes": 157,
+                            "posterUrl": "https://image.tmdb.org/t/p/w500/1n37BJchWHLiSYQkuFxe5KjB951.jpg",
+                            "backdropUrl": "https://image.tmdb.org/t/p/w1280/hrCTKrc3Tz2wbPOt5rcrlAhqF11.jpg",
+                            "releaseDate": "2026-07-15",
+                            "isComingSoon": false,
+                            "isNotified": false,
+                            "isFeatured": false,
+                            "fromPrice": 18,
+                            "ageRating": {
+                              "code": "16+",
+                              "minAge": 16,
+                              "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                            },
+                            "genres": [
+                              {
+                                "id": 1,
+                                "slug": "science-fiction",
+                                "name": "Science Fiction"
+                              },
+                              {
+                                "id": 2,
+                                "slug": "mystery",
+                                "name": "Mystery"
+                              },
+                              {
+                                "id": 8,
+                                "slug": "action",
+                                "name": "Action"
+                              }
+                            ],
+                            "formats": [
+                              {
+                                "id": 2,
+                                "slug": "max",
+                                "name": "MAX",
+                                "priceUplift": 6
+                              },
+                              {
+                                "id": 4,
+                                "slug": "panorama",
+                                "name": "PANORAMA",
+                                "priceUplift": 5
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "id": 808,
+                          "startsAt": "2026-10-02T14:00:00+00:00",
+                          "date": "2026-10-02",
+                          "time": "14:00",
+                          "timeBand": "afternoon",
+                          "price": 18,
+                          "seatsLeft": 123,
+                          "isSoldOut": false,
+                          "hall": {
+                            "id": 16,
+                            "name": "D",
+                            "venue": {
+                              "id": 4,
+                              "slug": "vake",
+                              "name": "Vake Park",
+                              "city": "Tbilisi"
+                            }
+                          },
+                          "venue": {
+                            "id": 4,
+                            "slug": "vake",
+                            "name": "Vake Park",
+                            "city": "Tbilisi"
+                          },
+                          "format": {
+                            "id": 1,
+                            "slug": "standard",
+                            "name": "Standard",
+                            "priceUplift": 0
+                          },
+                          "language": {
+                            "id": 4,
+                            "slug": "russian-dub",
+                            "name": "Russian Dub"
+                          },
+                          "movie": {
+                            "id": 8,
+                            "slug": "hope-1058424",
+                            "title": "Hope",
+                            "kind": "film",
+                            "runtimeMinutes": 157,
+                            "posterUrl": "https://image.tmdb.org/t/p/w500/1n37BJchWHLiSYQkuFxe5KjB951.jpg",
+                            "backdropUrl": "https://image.tmdb.org/t/p/w1280/hrCTKrc3Tz2wbPOt5rcrlAhqF11.jpg",
+                            "releaseDate": "2026-07-15",
+                            "isComingSoon": false,
+                            "isNotified": false,
+                            "isFeatured": false,
+                            "fromPrice": 18,
+                            "ageRating": {
+                              "code": "16+",
+                              "minAge": 16,
+                              "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                            },
+                            "genres": [
+                              {
+                                "id": 1,
+                                "slug": "science-fiction",
+                                "name": "Science Fiction"
+                              },
+                              {
+                                "id": 2,
+                                "slug": "mystery",
+                                "name": "Mystery"
+                              },
+                              {
+                                "id": 8,
+                                "slug": "action",
+                                "name": "Action"
+                              }
+                            ],
+                            "formats": [
+                              {
+                                "id": 2,
+                                "slug": "max",
+                                "name": "MAX",
+                                "priceUplift": 6
+                              },
+                              {
+                                "id": 4,
+                                "slug": "panorama",
+                                "name": "PANORAMA",
+                                "priceUplift": 5
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "meta": {
+                    "currentPage": 1,
+                    "lastPage": 3,
+                    "perPage": 10,
+                    "totalSessions": 70,
+                    "totalMovies": 24,
+                    "date": "2026-10-02"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/sessions/{session}": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "One session",
+        "description": "The booking modal header is built from this.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Session"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "id": 809,
+                    "startsAt": "2026-10-02T10:00:00+00:00",
+                    "date": "2026-10-02",
+                    "time": "10:00",
+                    "timeBand": "morning",
+                    "price": 18,
+                    "seatsLeft": 123,
+                    "isSoldOut": false,
+                    "hall": {
+                      "id": 8,
+                      "name": "D",
+                      "venue": {
+                        "id": 2,
+                        "slug": "batumi",
+                        "name": "Batumi Boulevard",
+                        "city": "Batumi"
+                      }
+                    },
+                    "venue": {
+                      "id": 2,
+                      "slug": "batumi",
+                      "name": "Batumi Boulevard",
+                      "city": "Batumi"
+                    },
+                    "format": {
+                      "id": 1,
+                      "slug": "standard",
+                      "name": "Standard",
+                      "priceUplift": 0
+                    },
+                    "language": {
+                      "id": 1,
+                      "slug": "georgian-dub",
+                      "name": "Georgian Dub"
+                    },
+                    "movie": {
+                      "id": 8,
+                      "slug": "hope-1058424",
+                      "title": "Hope",
+                      "kind": "film",
+                      "runtimeMinutes": 157,
+                      "posterUrl": "https://image.tmdb.org/t/p/w500/1n37BJchWHLiSYQkuFxe5KjB951.jpg",
+                      "backdropUrl": "https://image.tmdb.org/t/p/w1280/hrCTKrc3Tz2wbPOt5rcrlAhqF11.jpg",
+                      "releaseDate": "2026-07-15",
+                      "isComingSoon": false,
+                      "isNotified": false,
+                      "isFeatured": false,
+                      "fromPrice": 18,
+                      "ageRating": {
+                        "code": "16+",
+                        "minAge": 16,
+                        "description": "Restricted to viewers aged 16 and over. Child tickets are unavailable."
+                      },
+                      "genres": [
+                        {
+                          "id": 1,
+                          "slug": "science-fiction",
+                          "name": "Science Fiction"
+                        },
+                        {
+                          "id": 2,
+                          "slug": "mystery",
+                          "name": "Mystery"
+                        },
+                        {
+                          "id": 8,
+                          "slug": "action",
+                          "name": "Action"
+                        }
+                      ],
+                      "formats": [
+                        {
+                          "id": 2,
+                          "slug": "max",
+                          "name": "MAX",
+                          "priceUplift": 6
+                        },
+                        {
+                          "id": 4,
+                          "slug": "panorama",
+                          "name": "PANORAMA",
+                          "priceUplift": 5
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/sessions/{session}/seats": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "The hall map for a session",
+        "description": "Returns the hall exactly as it is built in the database. **Draw your map from this response.** The four halls are shaped differently, so a hardcoded grid will be wrong for three of them.\n\nPublic, so the map can be drawn before the visitor signs in. Sending a token additionally sets `isMine` on seats you already hold, so a returning user's selection can be restored.\n\n### Structure\n\n`sections[]` contains `rows[]` contains `seats[]`. Render each section as its own block with its name (`Stalls`, `Balcony`, `Circle`, `Boxes`) as a heading.\n\nRows inside one section share a width. Rows in different sections usually do not: hall B has a 10 wide front section and a 14 wide rear one. Never flatten the nesting into a single grid.\n\nRow labels come from the data. Hall D goes `G` then `J`, skipping `I` the way real cinemas do, so never derive a label from an array index.\n\n### What each seat field is for\n\n| Field | Use |\n| --- | --- |\n| `id` | Send this as `seatId` when holding seats. Never send `code`. |\n| `code` | The human label, `E7`. Show it in the price summary, the order and the ticket. |\n| `label` | Just the number within the row, `7`. Put this inside the seat button. |\n| `state` | Controls how the seat looks and whether it can be clicked. See below. |\n| `aisleAfter` | `true` means a gangway runs to the right of this seat. |\n| `isMine` | This seat is part of **your** live hold. |\n\n### Seat states\n\n- **`available`** selectable.\n- **`sold`** paid for by someone. Not selectable, and it will not free up.\n- **`held`** someone else has it under a live hold right now. Not selectable, but it may free up when their 8 minutes run out. Worth styling differently from `sold` so the difference is visible.\n- **`unavailable`** there is no seat there at all: a gangway, a wheelchair space, a structural gap. Render the empty space so the grid stays aligned, but do not draw a button. Halls A and C have these.\n\n### Using aisleAfter\n\nIt is purely visual and says nothing about availability. Walk the row in order and insert a spacer after any seat that has it:\n\n```js\nrow.seats.forEach((seat) => {\n  render(seat);\n  if (seat.aisleAfter) render(<span className='aisle' />);\n});\n```\n\nAisle positions differ per section, which is exactly why they are per seat rather than a rule you can apply globally.\n\n### Refetch this map when\n\n- the booking modal opens on step 1;\n- a hold request comes back `409`, so the contested seats show as taken;\n- a hold expires and the modal resets to step 1.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Seat map",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SeatMap"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "sessionId": 809,
+                    "hall": {
+                      "id": 8,
+                      "name": "D",
+                      "venue": {
+                        "id": 2,
+                        "slug": "batumi",
+                        "name": "Batumi Boulevard",
+                        "city": "Batumi"
+                      }
+                    },
+                    "sections": [
+                      {
+                        "name": "Stalls",
+                        "rows": [
+                          {
+                            "label": "A",
+                            "seats": [
+                              {
+                                "id": 570,
+                                "code": "A1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 571,
+                                "code": "A2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 572,
+                                "code": "A3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 573,
+                                "code": "A4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 574,
+                                "code": "A5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 575,
+                                "code": "A6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 576,
+                                "code": "A7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 577,
+                                "code": "A8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 578,
+                                "code": "A9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 579,
+                                "code": "A10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 580,
+                                "code": "A11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 581,
+                                "code": "A12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 582,
+                                "code": "A13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          },
+                          {
+                            "label": "B",
+                            "seats": [
+                              {
+                                "id": 583,
+                                "code": "B1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 584,
+                                "code": "B2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 585,
+                                "code": "B3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 586,
+                                "code": "B4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 587,
+                                "code": "B5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 588,
+                                "code": "B6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 589,
+                                "code": "B7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 590,
+                                "code": "B8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 591,
+                                "code": "B9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 592,
+                                "code": "B10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 593,
+                                "code": "B11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 594,
+                                "code": "B12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 595,
+                                "code": "B13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          },
+                          {
+                            "label": "C",
+                            "seats": [
+                              {
+                                "id": 596,
+                                "code": "C1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 597,
+                                "code": "C2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 598,
+                                "code": "C3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 599,
+                                "code": "C4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 600,
+                                "code": "C5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 601,
+                                "code": "C6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 602,
+                                "code": "C7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 603,
+                                "code": "C8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 604,
+                                "code": "C9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 605,
+                                "code": "C10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 606,
+                                "code": "C11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 607,
+                                "code": "C12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 608,
+                                "code": "C13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          },
+                          {
+                            "label": "D",
+                            "seats": [
+                              {
+                                "id": 609,
+                                "code": "D1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 610,
+                                "code": "D2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 611,
+                                "code": "D3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 612,
+                                "code": "D4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 613,
+                                "code": "D5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 614,
+                                "code": "D6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 615,
+                                "code": "D7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 616,
+                                "code": "D8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 617,
+                                "code": "D9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 618,
+                                "code": "D10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 619,
+                                "code": "D11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 620,
+                                "code": "D12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 621,
+                                "code": "D13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          },
+                          {
+                            "label": "E",
+                            "seats": [
+                              {
+                                "id": 622,
+                                "code": "E1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 623,
+                                "code": "E2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 624,
+                                "code": "E3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 625,
+                                "code": "E4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 626,
+                                "code": "E5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 627,
+                                "code": "E6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 628,
+                                "code": "E7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 629,
+                                "code": "E8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 630,
+                                "code": "E9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 631,
+                                "code": "E10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 632,
+                                "code": "E11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 633,
+                                "code": "E12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 634,
+                                "code": "E13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          },
+                          {
+                            "label": "F",
+                            "seats": [
+                              {
+                                "id": 635,
+                                "code": "F1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 636,
+                                "code": "F2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 637,
+                                "code": "F3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 638,
+                                "code": "F4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 639,
+                                "code": "F5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 640,
+                                "code": "F6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 641,
+                                "code": "F7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 642,
+                                "code": "F8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 643,
+                                "code": "F9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 644,
+                                "code": "F10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 645,
+                                "code": "F11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 646,
+                                "code": "F12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 647,
+                                "code": "F13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          },
+                          {
+                            "label": "G",
+                            "seats": [
+                              {
+                                "id": 648,
+                                "code": "G1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 649,
+                                "code": "G2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 650,
+                                "code": "G3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 651,
+                                "code": "G4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 652,
+                                "code": "G5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 653,
+                                "code": "G6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 654,
+                                "code": "G7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 655,
+                                "code": "G8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 656,
+                                "code": "G9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 657,
+                                "code": "G10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 658,
+                                "code": "G11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 659,
+                                "code": "G12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 660,
+                                "code": "G13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "Circle",
+                        "rows": [
+                          {
+                            "label": "J",
+                            "seats": [
+                              {
+                                "id": 661,
+                                "code": "J1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 662,
+                                "code": "J2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 663,
+                                "code": "J3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 664,
+                                "code": "J4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 665,
+                                "code": "J5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 666,
+                                "code": "J6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 667,
+                                "code": "J7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 668,
+                                "code": "J8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 669,
+                                "code": "J9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 670,
+                                "code": "J10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 671,
+                                "code": "J11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 672,
+                                "code": "J12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 673,
+                                "code": "J13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          },
+                          {
+                            "label": "K",
+                            "seats": [
+                              {
+                                "id": 674,
+                                "code": "K1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 675,
+                                "code": "K2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 676,
+                                "code": "K3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 677,
+                                "code": "K4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 678,
+                                "code": "K5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 679,
+                                "code": "K6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 680,
+                                "code": "K7",
+                                "label": "7",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 681,
+                                "code": "K8",
+                                "label": "8",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 682,
+                                "code": "K9",
+                                "label": "9",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 683,
+                                "code": "K10",
+                                "label": "10",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 684,
+                                "code": "K11",
+                                "label": "11",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 685,
+                                "code": "K12",
+                                "label": "12",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 686,
+                                "code": "K13",
+                                "label": "13",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "Boxes",
+                        "rows": [
+                          {
+                            "label": "L",
+                            "seats": [
+                              {
+                                "id": 687,
+                                "code": "L1",
+                                "label": "1",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 688,
+                                "code": "L2",
+                                "label": "2",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 689,
+                                "code": "L3",
+                                "label": "3",
+                                "state": "available",
+                                "aisleAfter": true,
+                                "isMine": false
+                              },
+                              {
+                                "id": 690,
+                                "code": "L4",
+                                "label": "4",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 691,
+                                "code": "L5",
+                                "label": "5",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              },
+                              {
+                                "id": 692,
+                                "code": "L6",
+                                "label": "6",
+                                "state": "available",
+                                "aisleAfter": false,
+                                "isMine": false
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/sessions/{session}/holds": {
+      "post": {
+        "tags": [
+          "Booking"
+        ],
+        "summary": "Hold seats (step 1 to step 2)",
+        "description": "Reserves seats for 8 minutes so nobody else can take them while the user pays. This is the step between the seat map and checkout.\n\nSend the seat `id` values from the seat map, each with a ticket type. At most 3 per order.\n\n### Ticket types\n\n`adult` is full price, `student` is 75 percent, `child` is 60 percent. Default a newly picked seat to `adult`. Child tickets are refused on 16+ and 18+ titles, so hide that option when `movie.ageRating.minAge >= 16`. The exact ratios and the block are in `GET /filter-options`, so read them from there rather than hardcoding.\n\n### Holding again\n\nA user has at most one hold per session. Calling this again replaces the previous one, which is what you want when they change their selection. There is no need to release the old hold first.\n\n### Handling 409\n\nSomeone took a seat between the map being drawn and this request. Nothing is held when that happens, so the whole selection has to be reconciled:\n\n1. read `contested` for the seat codes that were lost;\n2. tell the user which ones went, by code;\n3. mark those seats sold and drop them from the selection;\n4. keep the seats that are still fine, so they do not have to start over;\n5. refetch `GET /sessions/{session}/seats`.\n\n### Handling 422\n\nA body with only `message` and no `errors` means a booking rule blocked it, not a bad field. Show the message as it comes:\n\n- profile not complete, so send them to the profile page;\n- too young for this rating;\n- the session already started.\n\nA body with `errors` is ordinary field validation: a seat not in this hall, more than 3 seats, or a child ticket on a restricted title.\n\n### After a successful hold\n\nStart the countdown from `expiresAt`, not from `secondsRemaining`, so a slow render or a background tab does not drift. At zero: clear the selection, reset to step 1, refetch the map and show the expiry warning.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "seats"
+                ],
+                "properties": {
+                  "seats": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "seatId",
+                        "ticketType"
+                      ],
+                      "properties": {
+                        "seatId": {
+                          "type": "integer",
+                          "description": "`id` from the seat map"
+                        },
+                        "ticketType": {
+                          "type": "string",
+                          "enum": [
+                            "adult",
+                            "child",
+                            "student"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "seats": [
+                    {
+                      "seatId": 570,
+                      "ticketType": "adult"
+                    },
+                    {
+                      "seatId": 571,
+                      "ticketType": "student"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Seats held",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SeatHold"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "409": {
+            "description": "Seats were taken first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Some of those seats were just taken."
+                    },
+                    "contested": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "example": [
+                        "E7",
+                        "E8"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/BookingBlocked"
+          }
+        }
+      }
+    },
+    "/holds/{hold}": {
+      "get": {
+        "tags": [
+          "Booking"
+        ],
+        "summary": "Read a hold back",
+        "description": "Resume a countdown after a page reload, so a refresh mid checkout does not lose the seats.\n\nAn expired hold still returns `200`, with `isLive: false` and `secondsRemaining: 0`. That is deliberate: it lets you tell 'your hold ran out' apart from 'that hold never existed', which is a `404`.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "hold",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hold",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SeatHold"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Booking"
+        ],
+        "summary": "Release a hold",
+        "description": "Call this when the user closes the booking modal without paying, or presses back out of the flow entirely. The seats go straight back onto the map instead of sitting unavailable for the rest of the 8 minutes.\n\nNot calling it is not fatal, since the hold lapses on its own, but a released seat is a seat someone else can buy now.\n\nDo **not** call it when moving from checkout back to step 1, because the user still wants those seats.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "hold",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Released"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/orders": {
+      "post": {
+        "tags": [
+          "Booking"
+        ],
+        "summary": "Pay and complete the order (step 2)",
+        "description": "Turns a live hold into a paid order. This is the only call that sells seats.\n\nPayment is simulated. The card is validated, then only the last four digits are kept. Nothing is charged and no card data is stored, so any 16 digit number with a future expiry works. `4242 4242 4242 4242` is the conventional one.\n\n### Before you send\n\nPrefill `fullName`, `email` and `mobileNumber` from the profile, and disable the submit button while the request is in flight so a double click cannot buy twice.\n\nSpaces in the card and mobile numbers are stripped for you, so `4242 4242 4242 4242` is fine to send as typed.\n\n### Handling the failures\n\n- **`422` with `errors`** normal field validation. Map each key onto its input.\n- **`422` with only `message`** the hold ran out. The message is `Your hold time expired. Please re-select your seats.` Reset the modal to step 1, refetch the seat map and show the warning banner.\n- **`409`** a seat was sold by someone else's checkout in the moments between. `contested` names them. Same recovery as the hold endpoint.\n- **`403`** the hold belongs to another account.\n\n### On success\n\nYou get the whole order back, including `reference`. Use the response body to render the confirmation view rather than the state you had locally, so what the user sees is what was actually stored.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "holdId",
+                  "fullName",
+                  "email",
+                  "mobileNumber",
+                  "cardNumber",
+                  "expiry",
+                  "cvv"
+                ],
+                "properties": {
+                  "holdId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "fullName": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 50
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "mobileNumber": {
+                    "type": "string",
+                    "pattern": "^5\\d{8}$"
+                  },
+                  "cardNumber": {
+                    "type": "string",
+                    "example": "4242 4242 4242 4242",
+                    "description": "16 digits"
+                  },
+                  "expiry": {
+                    "type": "string",
+                    "pattern": "^(0[1-9]|1[0-2])/\\d{2}$",
+                    "example": "09/30",
+                    "description": "MM/YY, must not be in the past"
+                  },
+                  "cvv": {
+                    "type": "string",
+                    "example": "123",
+                    "description": "3 digits"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Paid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "description": "A seat was sold by someone else's checkout in between",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "contested": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/orders/{order}/refund": {
+      "post": {
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Refund an order",
+        "description": "Releases the seats back onto the map and moves the order into the Past tab.\n\nAllowed up to 2 hours before the session starts. Check `isRefundable` before enabling the button, and confirm with the user first since it cannot be undone.\n\nA `422` means it was refused: either already refunded, or inside the cutoff. The `message` says which, so show it.\n\nThe response is the updated order, so use it to re-render the card rather than removing it locally and hoping.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "order",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "KX-7QF2LD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refunded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "$ref": "#/components/responses/BookingBlocked"
+          }
+        }
+      }
+    },
+    "/tickets": {
+      "get": {
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "My tickets",
+        "description": "The two tabs on the profile page.\n\n`upcoming` is paid orders whose session has not started yet. `past` is everything else: sessions that have run, and refunded orders regardless of date. Without a filter you get both, newest session first.\n\n### The Refund button\n\nDrive it from `isRefundable`, which is already false inside the 2 hour cutoff and false once refunded. Do not compute the cutoff yourself, or a clock skew will let the user click a button that then fails. When it is false on an upcoming ticket, disable it and explain why in a tooltip.\n\nEach order carries its full `session` and its `tickets`, so a card can be rendered without any further requests.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "filter",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "upcoming",
+                "past"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Orders newest session first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Order"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      }
+    }
+  }
+}
