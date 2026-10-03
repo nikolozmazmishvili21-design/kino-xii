@@ -89,3 +89,8 @@
 .form-field__helper {
   color: var(--color-muted);
 }
+
+.form-field__error-message {
+  display: block;
+  overflow-wrap: anywhere;
+}

@@ -15,9 +15,9 @@ export default function AuthModal({ mode, onSwitchMode, onClose, openerRef }) {
           <h2 className="auth-modal__title" id={`${id}-title`}>{isSignup ? "Sign up" : "Log in"}</h2>
           <p className="auth-modal__subtitle" id={`${id}-description`}>{isSignup ? "Welcome to Kino XII" : "Welcome back to Kino XII"}</p>
         </div>
-        <button type="button" className="auth-modal__close" onClick={onClose} aria-label="Close authentication dialog"><img src={closeIcon} alt="" /></button>
+        <button type="button" className="auth-modal__close" onPointerDown={(event) => { if (event.button === 0) event.preventDefault(); }} onClick={onClose} aria-label="Close authentication dialog"><img src={closeIcon} alt="" /></button>
       </div>
-      {isSignup ? <SignupForm onSwitchMode={onSwitchMode} /> : <LoginForm onSwitchMode={onSwitchMode} />}
+      {isSignup ? <SignupForm onSwitchMode={onSwitchMode} onSuccess={onClose} /> : <LoginForm onSwitchMode={onSwitchMode} onSuccess={onClose} />}
     </Modal>
   );
 }

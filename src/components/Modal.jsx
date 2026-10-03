@@ -68,7 +68,11 @@ export default function Modal({ children, className = "", labelledBy, describedB
         if (!event.currentTarget.open) requestClose();
       }}
       onKeyDown={trapFocus}
-      onPointerDown={(event) => { pointerStartedOutside.current = event.target === event.currentTarget && isOutsideDialog(event); }}
+      onPointerDown={(event) => {
+        pointerStartedOutside.current = event.target === event.currentTarget && isOutsideDialog(event);
+        // Keep input focus until the backdrop click closes the dialog.
+        if (pointerStartedOutside.current && event.button === 0) event.preventDefault();
+      }}
       onClick={(event) => {
         if (pointerStartedOutside.current && event.target === event.currentTarget && isOutsideDialog(event)) requestClose();
         pointerStartedOutside.current = false;

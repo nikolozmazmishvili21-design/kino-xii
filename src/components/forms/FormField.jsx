@@ -19,7 +19,7 @@ export default function FormField({ label, error, success = false, helperText, .
         )}
       </div>
       {helperText && <p className="form-field__helper" id={helperId}>{helperText}</p>}
-      {error && <p className="form-field__error" id={errorId}>{error}</p>}
+      {error && <p className="form-field__error" id={errorId}>{(Array.isArray(error) ? error : [error]).map((message, index) => <span className="form-field__error-message" key={index}>{message}</span>)}</p>}
     </div>
   );
 }

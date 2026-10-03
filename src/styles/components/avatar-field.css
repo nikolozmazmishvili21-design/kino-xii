@@ -50,3 +50,10 @@
   outline: 2px solid var(--color-text);
   outline-offset: 3px;
 }
+
+.avatar-field__error {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 13px;
+}
