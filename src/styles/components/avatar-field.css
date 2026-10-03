@@ -1,0 +1,52 @@
+.avatar-field {
+  position: relative;
+}
+
+.avatar-field__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.avatar-field__preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border: 0.5px dashed var(--color-raised);
+  border-radius: 8px;
+  background: var(--tint-white);
+  overflow: hidden;
+}
+
+.avatar-field__image {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+}
+
+.avatar-field__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.avatar-field__title {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 15px;
+}
+
+.avatar-field__hint {
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.avatar-field:has(.avatar-field__input:focus-visible) .avatar-field__preview {
+  outline: 2px solid var(--color-text);
+  outline-offset: 3px;
+}

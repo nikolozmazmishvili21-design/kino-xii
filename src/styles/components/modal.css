@@ -1,0 +1,17 @@
+.modal-open {
+  overflow: hidden;
+}
+
+.modal {
+  position: fixed;
+  margin: auto;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--color-text);
+}
+
+.modal::backdrop {
+  backdrop-filter: blur(5px);
+}

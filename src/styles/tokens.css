@@ -1,4 +1,16 @@
 :root {
   --font-primary: "Archivo", sans-serif;
   --font-numeric: "Poppins", sans-serif;
+  --color-page: #070c1c;
+  --color-surface: #1e2031;
+  --color-raised: #2a2c3d;
+  --color-border: #505261;
+  --color-text: #ffffff;
+  --color-muted: #a9a9a9;
+  --color-accent: #ec3013;
+  --color-success: #4ade80;
+  --color-warning: #e27e04;
+  --tint-white: rgba(255, 255, 255, 0.1);
+  --tint-success: rgba(74, 222, 128, 0.1);
+  --tint-warning: rgba(226, 126, 4, 0.1);
 }

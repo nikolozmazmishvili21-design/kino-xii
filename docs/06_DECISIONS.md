@@ -793,6 +793,35 @@ A form library may be reconsidered later only if a concrete implementation probl
 
 ---
 
+## D-020 — Accessible keyboard/input focus visibility
+
+**Status:** Accepted
+**Date:** 2026-10-03
+
+### Decision
+
+Keep the Figma-defined focused input border (#505261), but also keep the additional visible focus outline currently implemented for focused auth inputs.
+
+This is an intentional accessibility deviation from the exact Figma focused-state rendering.
+
+### Reason
+
+The Figma focused input state uses a low-contrast border that is not sufficiently prominent as the sole focus indicator. The project accessibility requirements prioritize a clearly visible focus state.
+
+### Important
+
+- Do not alter the normal Figma geometry, colors, spacing, or field state styling.
+- Do not add this outline to unrelated elements beyond their existing focus-visible behavior.
+- This decision applies to preserving an accessible focus indicator where the exact Figma state is too subtle.
+
+### Affected
+
+- auth/form input focus styling
+- visual QA expectations
+- docs/06_DECISIONS.md
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:

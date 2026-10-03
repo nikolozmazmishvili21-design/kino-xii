@@ -522,6 +522,6 @@ These states should be included in visual QA.
 
 Canonical duplicated design:
 
-`https://www.figma.com/design/5AncExEN8mTN1Wy02MMD6r/Redberry-Bootcamp-XII--Copy-?node-id=0-1`
+`https://www.figma.com/design/Zeb7RQ8mjGp04YIPde2ud2/Redberry-Bootcamp-XII--Copy-?node-id=0-1`
 
 Use this duplicated file for all design inspection during implementation.

@@ -1,0 +1,91 @@
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 13px;
+}
+
+.form-field__label {
+  color: var(--color-text);
+}
+
+.form-field__control {
+  position: relative;
+}
+
+.form-field__input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 13px;
+}
+
+.form-field__input::placeholder {
+  color: var(--color-muted);
+  opacity: 1;
+}
+
+.form-field__input:hover {
+  background: var(--color-raised);
+  border-color: var(--color-border);
+}
+
+.form-field__input:focus {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  outline: none;
+}
+
+.form-field__input:focus-visible {
+  outline: 2px solid var(--color-text);
+  outline-offset: 3px;
+}
+
+.form-field__icon {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+.form-field--error .form-field__input,
+.form-field--success .form-field__input {
+  padding-right: 40px;
+}
+
+.form-field--error .form-field__input {
+  border-color: var(--color-accent);
+}
+
+.form-field--error .form-field__label,
+.form-field--error .form-field__input,
+.form-field--error .form-field__input::placeholder,
+.form-field__error {
+  color: var(--color-accent);
+}
+
+.form-field__helper,
+.form-field__error {
+  margin: -2px 0 0;
+}
+
+.form-field__helper {
+  color: var(--color-muted);
+}
