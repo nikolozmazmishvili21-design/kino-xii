@@ -1,9 +1,11 @@
 import { useCallback, useRef, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useMatch } from "react-router-dom";
+import { ROUTES } from "../routing/routes.js";
 import Navbar from "../components/navigation/Navbar.jsx";
 import AuthModal from "../auth/AuthModal.jsx";
 
 export default function AppShell() {
+  const isHome = useMatch(ROUTES.home);
   const [authMode, setAuthMode] = useState("closed");
   const openerRef = useRef(null);
   const closeAuth = useCallback(() => setAuthMode("closed"), []);
@@ -14,7 +16,7 @@ export default function AppShell() {
   }
 
   return (
-    <>
+    <div className={`app-shell${isHome ? " app-shell--home" : ""}`}>
       <Navbar onOpenAuth={openAuth} />
       <Outlet />
       {authMode !== "closed" && (
@@ -25,6 +27,6 @@ export default function AppShell() {
           openerRef={openerRef}
         />
       )}
-    </>
+    </div>
   );
 }

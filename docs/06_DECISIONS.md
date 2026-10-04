@@ -822,6 +822,62 @@ The Figma focused input state uses a low-contrast border that is not sufficientl
 
 ---
 
+## D-021 — Home unresolved visual/motion source gaps
+
+**Status:** Accepted
+**Date:** 2026-10-04
+
+### Decision
+
+1. The Assignment requires an “animated hero experience”.
+
+2. The canonical Figma Home/Banner nodes were inspected, including:
+   - `131:4477`
+   - `131:4476`
+   - `137:1793`
+   - `137:1840`
+   - `137:1887`
+
+   Exact prototype motion timing, autoplay interval, easing or transition behavior could not be verified from the currently available canonical Figma data.
+
+3. Therefore:
+   - do not invent hero autoplay
+   - do not invent transition duration
+   - do not invent easing
+   - do not invent animation behavior
+   - current Home implementation uses deterministic manual previous/next navigation only
+
+4. If exact canonical Figma prototype/motion behavior becomes verifiable later:
+   - update this decision
+   - implement only the verified behavior
+
+5. Home loading, empty and error states are required functionally, but exact Figma-specific visual designs for those states are not currently verified.
+
+6. Therefore:
+   - provide clear accessible loading/empty/error/retry states using the existing design system
+   - do not invent exact Figma geometry/styling for states that are not present/verified
+   - if exact canonical states become available later, update them accordingly
+
+7. Movie-list responses do not provide a synopsis/premiere-copy source for the decorative/textual hero content seen in some Figma examples.
+   Therefore:
+   - do not hardcode Figma example movie copy
+   - do not invent synopsis/premiere text
+   - render only API-supported movie information
+
+### Reason
+
+Preserve source-of-truth discipline and avoid invented behavior or content where Assignment/Figma/OpenAPI do not provide a verifiable exact implementation.
+
+### Affected
+
+- Home Hero
+- Home loading/empty/error states
+- Home visual QA
+- `docs/03_FIGMA_REFERENCE.md` only if future verified motion/state references are added
+- `docs/05_ARCHITECTURE.md` only if architecture behavior later changes
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
