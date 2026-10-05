@@ -1,11 +1,14 @@
 # Kino XII — Figma Reference
 
-> Canonical design reference extracted from the duplicated Figma file.
+> Design inventory with the current editable implementation-inspection source identified below.
 >
-> Figma file:
-> https://www.figma.com/design/5AncExEN8mTN1Wy02MMD6r/Redberry-Bootcamp-XII--Copy-
+> Current implementation-inspection file (editable Education duplicate):
+> https://www.figma.com/design/Zeb7RQ8mjGp04YIPde2ud2/
 >
-> File key: `5AncExEN8mTN1Wy02MMD6r`
+> Current file key: `Zeb7RQ8mjGp04YIPde2ud2`
+>
+> Earlier/public/view-only inventory source: `5AncExEN8mTN1Wy02MMD6r` — https://www.figma.com/design/5AncExEN8mTN1Wy02MMD6r/Redberry-Bootcamp-XII--Copy-
+> Retained for provenance only, not current implementation inspection. The copies are not guaranteed to remain identical; verify exact nodes in the current editable file.
 >
 > This file records verified Figma structure, screen/state inventory, major components, typography, and color usage. It is not a substitute for opening the relevant Figma node when exact spacing, geometry, assets, or visual behavior is required.
 
@@ -13,10 +16,12 @@
 
 ## 1. Design pages
 
-The duplicated file contains these top-level pages:
+The earlier inventory listed these top-level pages; both were also verified in the current editable copy:
 
 - `Design screens` — page id `0:1`
 - `Components` — page id `355:14337`
+
+The editable copy additionally includes `Style Guide` — page id `381:6297`, verified during the Sessions audit on 2026-10-05. The earlier inventory did not list this page.
 
 ---
 
@@ -53,6 +58,10 @@ Authorization-specific component states are documented separately below.
 
 - `Sessions` — `272:7289` — 1728×1556
 - `Sessions_Filtered` — `276:9167` — 1728×1556
+
+The requested Sessions screen IDs, supporting component IDs, and variant IDs listed in this document were verified in the editable Education copy `Zeb7RQ8mjGp04YIPde2ud2` on 2026-10-05: Days `119:3614`, Sessions card `119:3760`, Sessions time `276:10275`, pagination `429:7088`, and pagination buttons `429:7020`.
+
+Accepted resolutions for Sessions source conflicts and undefined UI behavior are recorded in D-022 in `docs/06_DECISIONS.md`; those fallback policies are not additional Figma-defined states.
 
 Use these two frames to verify:
 
@@ -520,8 +529,10 @@ These states should be included in visual QA.
 
 ## 16. Figma implementation reference URL
 
-Canonical duplicated design:
+Current implementation-inspection design (editable Education duplicate):
 
-`https://www.figma.com/design/Zeb7RQ8mjGp04YIPde2ud2/Redberry-Bootcamp-XII--Copy-?node-id=0-1`
+`https://www.figma.com/design/Zeb7RQ8mjGp04YIPde2ud2/`
 
-Use this duplicated file for all design inspection during implementation.
+Use file key `Zeb7RQ8mjGp04YIPde2ud2` for all current design inspection during implementation. The earlier/public/view-only key `5AncExEN8mTN1Wy02MMD6r` is retained above only as inventory provenance. Do not assume the copies remain identical; inspect each relevant live node in the editable file.
+
+If a divergence is discovered between the earlier/original/public provenance source `5AncExEN8mTN1Wy02MMD6r` and the editable inspection copy `Zeb7RQ8mjGp04YIPde2ud2`, report it before implementation and do not silently assume equivalence. The editable duplicate does not automatically outrank the original merely because it is used for inspection. Resolve any correctness-affecting difference through the project's normal source-reconciliation process before coding.

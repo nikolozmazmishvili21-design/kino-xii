@@ -878,6 +878,237 @@ Preserve source-of-truth discipline and avoid invented behavior or content where
 
 ---
 
+## D-022 — Sessions UI conflict and fallback policy
+
+**Status:** Accepted
+**Date:** 2026-10-05
+
+### Decision
+
+The Sessions live Figma audit, independent review, and source-conflict reconciliation are complete. Apply the following accepted policies during Sessions UI implementation while preserving the completed data/URL foundation.
+
+Source priority remains OpenAPI, Assignment, Figma, accepted decisions, then compatible explicit instructions. The fallback behaviors below are requirement-resolution decisions, not claims of additional Figma-defined behavior.
+
+### A. Source-priority resolutions
+
+Where Assignment and Figma disagree:
+
+1. Use **Clear All Filters**, rather than Figma's **Clear filters**, because the Assignment explicitly names the action.
+2. Render session price as `from ₾{session.price}` using the API `Session.price` value. Do not derive a separate minimum session price in the client.
+3. Select the current local calendar day by default and always make the selected date visually clear. Figma's default frame without a visibly selected day does not override the Assignment.
+4. Each movie group must show poster, title, age rating, genre, and starting price. Use `movie.genres` and `movie.fromPrice`. Runtime may remain visible through `runtimeMinutes`, but does not replace genre or starting price.
+5. Available-session activation opens the booking / Seat Selection flow. Do not follow the newer Figma prototype destination that navigates to movie detail.
+6. Source venues, formats, languages, time bands, and sorts from API/filter-options values. Do not copy placeholder labels such as `Standart` or `Englis Dub`. Use `meta.totalSessions` for **Showing X sessions**, rather than Figma's illustrative count.
+
+### B. Movie-group metadata placement
+
+Figma does not define placement for the Assignment-required genre and starting price.
+
+Preserve the verified movie-group composition: 56×80 poster, title, age badge, runtime, and existing session-row geometry. Add genre and starting price inside the movie-information block.
+
+Implementation must:
+
+- keep the verified group/session geometry as intact as practical
+- keep required movie metadata out of the session buttons
+- use `movie.fromPrice` directly, without calculating another "from" value from current-page/current-date sessions
+- use existing design typography/tokens for any Sessions-specific internal spacing needed by the added metadata
+- visually verify the resulting composition
+
+This placement is an accepted requirement-resolution decision, not a placement defined by Figma.
+
+### C. Active filter counter
+
+The inconsistent Figma example does not establish a counting algorithm.
+
+Count active values in normalized URL state:
+
+- each selected `venues[]`, `formats[]`, `languages[]`, and `bands[]` value contributes 1
+- non-empty `search` contributes 1
+- `date`, `sort`, and `page` contribute nothing
+
+When venue reconciliation removes an invalid format from the URL, that format no longer contributes. Derive the counter from normalized URL state, not separate component state.
+
+Examples:
+
+| Normalized URL filters | Counter |
+|---|---|
+| `venues=[galleria,vake]`, `formats=[max]`, `bands=[morning]` | 4 filters active |
+| `venues=[galleria]`, `search=odyssey` | 2 filters active |
+| Date only | 0 filters active |
+
+### D. Filter clearing
+
+**Clear All Filters** clears `venues[]`, `formats[]`, `languages[]`, `bands[]`, and `search`, while preserving `date`.
+
+Sort remains a sorting preference, is not counted as an active filter, and is preserved by clearing filters. Follow the existing URL rules: a filter change resets `page` to 1.
+
+### E. Date-row access and overflow
+
+The Assignment requires all next 7 days to be selectable. Verified Figma uses 37×54 Days_Small tiles, a 6px gap, and a 272px sidebar inner width. Seven tiles need 295px; Figma clips the final tile with `overflowDirection=NONE` and defines no navigation interaction.
+
+Preserve tile size, gap, and initial visual composition. Make the date row horizontally scrollable so every required day is reachable.
+
+- Do not resize tiles merely to fit all seven within 272px.
+- A hidden scrollbar is acceptable when it preserves the composition.
+- Support mouse/touch/trackpad scrolling as appropriate and keyboard access to every day.
+- Scroll focused/selected off-screen items into view as needed.
+- Do not invent arrows unless a later verified design requires them.
+
+### F. Deep-linked date outside the next 7 days
+
+Preserve the URL foundation's support for any valid explicit API date.
+
+The date control continues to represent today through today+6 days. When a valid URL-selected date falls outside that range:
+
+- preserve the URL/request date
+- append one additional selected date item to the row
+- use the same selected Days_Small visual treatment
+- scroll that selected item into view
+
+Do not silently rewrite the URL to today. The additional item makes durable URL state visible without removing the required next-seven-day set.
+
+### G. Session-row overflow
+
+Verified Figma uses 252×104 session-time cards with a 12px gap. Five cards exceed the movie-group width; Figma clips the fifth card and defines no horizontal-scroll interaction.
+
+Preserve card size, gap, and verified movie-group width/composition. Make each session-time row horizontally scrollable when its sessions exceed the visible width.
+
+- Do not shrink session controls or wrap them unless a later authoritative design requires wrapping.
+- Preserve Figma appearance at the initial scroll position.
+- Keep every available/sold-out session keyboard reachable; sold-out sessions remain non-selectable.
+- Scroll the target control into view when it receives focus.
+
+### H. Low-seat color
+
+Figma demonstrates green/red availability text without an authoritative numeric low-seat threshold.
+
+Use one normal available treatment for available sessions. Use server `isSoldOut` for the verified disabled/**Sold out** state. Do not invent a low-seat threshold.
+
+Revisit this visual state only when a backend field or accepted rule defines low-seat behavior.
+
+### I. Pagination window policy
+
+Figma demonstrates previous, 1, 2, active 3, ..., 10, next, but does not define a full algorithm. Use server `meta.currentPage` and `meta.lastPage`; pagination counts films as defined by OpenAPI.
+
+| Condition | Page-number window |
+|---|---|
+| `lastPage <= 1` | Do not render pagination |
+| `2 <= lastPage <= 5` | Render all page numbers |
+| `lastPage > 5` and `currentPage <= 3` | `1, 2, 3, ..., lastPage` |
+| `lastPage > 5`, `currentPage > 3`, and `currentPage < lastPage - 2` | `1, ..., currentPage, ..., lastPage` |
+| `lastPage > 5` and `currentPage >= lastPage - 2` | `1, ..., lastPage-2, lastPage-1, lastPage` |
+
+When pagination exists, always render previous/next controls. Disable previous on page 1 and next on `lastPage`. Ellipses are display-only and non-interactive.
+
+Automatic server-clamped page correction remains owned by the completed URL foundation.
+
+### J. Sticky sidebar
+
+The Assignment requires stickiness; Figma establishes initial geometry without defining sticky scrolling behavior.
+
+On desktop, use CSS sticky positioning with a **24px top offset**. Preserve the verified 320px width and desktop geometry.
+
+When the viewport cannot show the full sidebar, constrain it to available viewport height and allow vertical scrolling inside it. Keep every filter and the footer reachable.
+
+Do not invent mobile/tablet breakpoints. Preserve verified Figma dimensions at the 1728px reference and the Assignment's 1920×1080 target environment instead of proportionally scaling them.
+
+### K. Search presentation
+
+Sessions URL/API `search` support remains part of the completed data foundation. Neither the Assignment nor the inspected Sessions Figma places a standalone search input in the Sessions body/sidebar; Navbar already contains the application's search entry point.
+
+Do not render the temporary Sessions-body search input in the final UI. Preserve `search` support in `sessionsQuery.js` and the API contract for deep links and later global search integration.
+
+Non-empty search contributes 1 to the active-filter counter and is cleared by **Clear All Filters**.
+
+### L. Sort control
+
+Use the verified collapsed Figma appearance, with values/labels from `filterOptions.sorts`.
+
+A semantic native select is acceptable unless an exact later design requires a custom accessible menu. Do not invent an open-menu visual state, hardcode sort IDs, or introduce a frontend default sort ID. Omitted sort continues to use backend default behavior.
+
+When `query.sort === ""`, the collapsed control displays the backend-default sort label: resolve the OpenAPI-defined default `time_asc` in `filterOptions.sorts` and render that option's API-provided `label` without hardcoding the label. If that option is unexpectedly absent, render a neutral accessible sort placeholder rather than inventing an option.
+
+This is display-only fallback behavior that preserves the already-reviewed URL-state foundation: leave sort omitted from the URL/request and keep the canonical request string unchanged. Do not normalize omitted sort to `time_asc`, insert `sort=time_asc` into the URL or outgoing request, or duplicate the sort option list in frontend constants. The backend continues to apply its OpenAPI-defined default.
+
+### M. Loading / empty / error states
+
+No Sessions-specific Figma skeleton, no-results, or request-error/retry states were found. The Assignment still requires skeleton loading, **No sessions found**, and recoverable error/retry behavior.
+
+Apply the same source-gap principle as D-021 for Home:
+
+- build these states from the existing Kino XII design system
+- make skeleton geometry mirror the verified Sessions layout
+- use existing typography/colors/buttons for empty/error UI
+- preserve accessibility and retry behavior
+- do not claim these fallback states are Figma-defined
+
+The existing app-level bootstrap gate prevents a Sessions-local skeleton during the earliest cold boot. This is a known separate limitation. Do not change bootstrap behavior during the first Sessions visual pass unless separately scoped.
+
+### N. Selected session state
+
+The legacy Sessions card has a Selected variant, but the live Sessions list uses the newer Sessions-time component. No authoritative source requires persistent selected-session state on this page.
+
+Do not add persistent selected-session UI state. Available-session activation starts booking; sold-out sessions are disabled.
+
+### O. Footer
+
+Sessions and Home Figma footers match in 1728×98 geometry, separator structure, and logo/copyright composition.
+
+A shared Footer component may be extracted when the refactor is small and preserves Home exactly. Prefer shared rendering with page-level inclusion where required. Visually check Home for regressions if extraction occurs.
+
+Do not automatically move Footer into AppShell unless every route is verified to require it.
+
+### P. Navbar
+
+Verified live Sessions Navbar instance `302:23538` has `State=Unathorized`, main component `137:1978`, and component set `240:1418`.
+
+Reuse existing Navbar/AppShell. Do not create a Sessions-specific Navbar or redesign Navbar during Sessions work. Existing auth/Navbar code retains ownership of authenticated/guest behavior.
+
+### Q. Figma asset policy
+
+Reuse the verified existing `chevron-down.svg` for sort.
+
+Use CSS-native geometry for checkbox boxes/backgrounds, date tiles, pills, separators, and pagination circles.
+
+Export/create exact project assets only where necessary for the checkbox check vector, availability ticket icon, and pagination arrow. Do not reuse `home-arrow-left.svg` for pagination or introduce arbitrary substitute icons.
+
+### R. Responsive policy
+
+No mobile/tablet Sessions design is verified. Follow D-013:
+
+- use exact 1728px desktop geometry as the reference
+- treat 1920×1080 as a target display environment, not a scale factor
+- preserve fixed Figma component dimensions and let outer space grow sensibly
+- do not invent mobile/tablet breakpoints
+- prevent horizontal page overflow where practical
+- use local scrolling for intentionally overflowing date/session rows
+
+### S. Documented Figma source
+
+For Sessions and future implementation inspection, use the editable Education duplicate:
+
+`https://www.figma.com/design/Zeb7RQ8mjGp04YIPde2ud2/`
+
+Current implementation-inspection file key: `Zeb7RQ8mjGp04YIPde2ud2`.
+
+The earlier public/view-only copy `5AncExEN8mTN1Wy02MMD6r` may remain recorded for provenance, but must not be described as the current implementation-inspection source.
+
+### Reason
+
+Resolve the reviewed Sessions source conflicts and undefined UI policies before implementation, while keeping API behavior, URL state, verified visuals, accessibility, and fallback decisions distinct.
+
+### Affected
+
+- Sessions UI implementation and visual/accessibility QA
+- Sessions filter/date/sort/pagination presentation and overflow behavior
+- required movie metadata and loading/empty/error rendering
+- possible small shared Footer extraction with Home visual regression checks
+- `docs/03_FIGMA_REFERENCE.md` source clarification
+
+The completed Sessions data/URL foundation remains unchanged. No architecture-document update is required in this pass; update `docs/05_ARCHITECTURE.md` later only if implementation reveals a structural change needing documentation.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
