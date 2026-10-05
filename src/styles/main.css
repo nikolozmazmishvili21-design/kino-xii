@@ -15,3 +15,6 @@
 @import "./components/sessions-filters.css";
 @import "./components/sessions-results.css";
 @import "./pages/sessions.css";
+@import "./components/movie-detail.css";
+@import "./components/movie-detail-ticket.css";
+@import "./pages/movie-detail.css";

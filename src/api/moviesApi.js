@@ -21,3 +21,14 @@ export function getNowPlayingMovies(options) {
 export function getComingSoonMovies(options) {
   return getCatalogue("/movies/coming-soon", options);
 }
+
+export async function getMovie(slug, { signal } = {}) {
+  const response = await apiRequest(`/movies/${encodeURIComponent(slug)}`, { signal });
+  return response.data?.data;
+}
+
+export async function getMovieSessions(slug, date, { signal } = {}) {
+  const query = new URLSearchParams({ date });
+  const response = await apiRequest(`/movies/${encodeURIComponent(slug)}/sessions?${query}`, { signal });
+  return response.data?.data;
+}

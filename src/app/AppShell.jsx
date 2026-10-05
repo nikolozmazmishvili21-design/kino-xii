@@ -6,6 +6,7 @@ import AuthModal from "../auth/AuthModal.jsx";
 
 export default function AppShell() {
   const isHome = useMatch(ROUTES.home);
+  const isMovieDetail = useMatch(ROUTES.movieDetail);
   const [authMode, setAuthMode] = useState("closed");
   const openerRef = useRef(null);
   const closeAuth = useCallback(() => setAuthMode("closed"), []);
@@ -16,7 +17,7 @@ export default function AppShell() {
   }
 
   return (
-    <div className={`app-shell${isHome ? " app-shell--home" : ""}`}>
+    <div className={`app-shell${isHome ? " app-shell--home" : ""}${isMovieDetail ? " app-shell--movie-detail" : ""}`}>
       <Navbar onOpenAuth={openAuth} />
       <Outlet />
       {authMode !== "closed" && (
