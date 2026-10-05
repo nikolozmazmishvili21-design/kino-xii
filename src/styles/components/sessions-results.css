@@ -1,0 +1,310 @@
+.sessions-movies,
+.sessions-skeleton {
+  display: flex;
+  flex-direction: column;
+}
+
+.sessions-movie {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.sessions-movie + .sessions-movie {
+  margin-top: 32px;
+  padding-top: 32px;
+  border-top: 1px solid var(--color-raised);
+}
+
+.sessions-movie__header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 80px;
+}
+
+.sessions-movie__header .movie-image,
+.sessions-skeleton__poster {
+  flex: 0 0 56px;
+  width: 56px;
+  height: 80px;
+  border-radius: 8px;
+}
+
+.sessions-movie__header .movie-image__fallback {
+  padding: 4px;
+  font-size: 10px;
+}
+
+.sessions-movie__info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sessions-movie__title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.sessions-movie__title-row h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: normal;
+}
+
+.sessions-movie .movie-age {
+  flex-shrink: 0;
+  padding: 4px 8px;
+}
+
+.sessions-movie__runtime {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+/* D-022 metadata placement is Assignment-driven, not defined by Figma. */
+.sessions-movie__metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.sessions-movie__price {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.sessions-time-row {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.sessions-time-row::-webkit-scrollbar {
+  display: none;
+}
+
+.sessions-time-row:focus-visible {
+  outline-offset: -3px;
+}
+
+.session-time-slot {
+  flex: 0 0 252px;
+  width: 252px;
+  height: 104px;
+  border-radius: 16px;
+}
+
+.session-time,
+.sessions-skeleton__time {
+  display: flex;
+  flex: 0 0 252px;
+  flex-direction: column;
+  gap: 12px;
+  width: 252px;
+  height: 104px;
+  padding: 15px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+}
+
+.session-time {
+  cursor: pointer;
+}
+
+.session-time:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.session-time:focus-visible,
+.session-time-slot:focus-visible {
+  outline-offset: -3px;
+}
+
+.session-time__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.session-time__time {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: normal;
+}
+
+.session-time__format {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--color-raised);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: normal;
+}
+
+.session-time__details {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  font-size: 12px;
+}
+
+.session-time__location {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.session-time__language,
+.session-time__venue {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.session-time__language {
+  color: var(--color-muted);
+  line-height: 1.3;
+}
+
+.session-time__venue {
+  font-weight: 600;
+  line-height: normal;
+}
+
+.session-time__availability {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 10px;
+}
+
+.session-time__seats {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  height: 13px;
+  color: var(--color-success);
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.session-time__seats--sold {
+  color: var(--color-muted);
+}
+
+.session-time__seats img {
+  flex-shrink: 0;
+}
+
+.session-time__price {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: normal;
+  white-space: nowrap;
+}
+
+.sessions-pagination {
+  display: flex;
+  align-self: center;
+  align-items: center;
+  gap: 8px;
+  margin-top: 52px;
+}
+
+.sessions-pagination button,
+.sessions-pagination__ellipsis {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-muted);
+  font-family: var(--font-numeric);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.sessions-pagination button {
+  cursor: pointer;
+}
+
+.sessions-pagination .sessions-pagination__arrow {
+  background: var(--color-surface);
+}
+
+.sessions-pagination button:hover {
+  background: var(--color-raised);
+}
+
+.sessions-pagination button[aria-current="page"] {
+  background: var(--color-accent);
+  color: var(--color-text);
+}
+
+.sessions-pagination button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sessions-pagination__arrow--next img {
+  transform: rotate(180deg);
+}
+
+.sessions-results-header__loading {
+  width: 137px;
+  height: 15px;
+  border-radius: 5px;
+  background: var(--color-raised);
+}
+
+.sessions-skeleton__poster,
+.sessions-skeleton__info span {
+  background: var(--color-raised);
+}
+
+.sessions-skeleton__info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sessions-skeleton__info span {
+  width: 167px;
+  height: 15px;
+  border-radius: 5px;
+}
+
+.sessions-skeleton__info span:nth-child(2) {
+  width: 70px;
+}

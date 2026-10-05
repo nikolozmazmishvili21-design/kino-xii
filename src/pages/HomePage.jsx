@@ -3,6 +3,7 @@ import ComingSoonSection from "../components/home/ComingSoonSection.jsx";
 import HeroCarousel from "../components/home/HeroCarousel.jsx";
 import NowPlayingSection from "../components/home/NowPlayingSection.jsx";
 import useCatalogueSection from "../components/home/useCatalogueSection.js";
+import Footer from "../components/Footer.jsx";
 
 // Home 139:2899 contains six big cards and four medium cards, including overflow.
 const loadNowPlaying = (options) => getNowPlayingMovies({ ...options, limit: 6 });
@@ -24,12 +25,7 @@ export default function HomePage() {
           <ComingSoonSection state={comingSoon} />
         </div>
       </main>
-      <footer className="home-footer">
-        <div className="home-footer__content">
-          <span className="home-footer__logo">KINO <span>XII</span></span>
-          <p>© 2026 Kino XII. All rights reserved.</p>
-        </div>
-      </footer>
+      <Footer />
     </>
   );
 }

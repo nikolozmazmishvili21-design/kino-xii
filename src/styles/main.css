@@ -12,3 +12,6 @@
 @import "./components/home-catalogue.css";
 @import "./components/home-hero.css";
 @import "./pages/home.css";
+@import "./components/sessions-filters.css";
+@import "./components/sessions-results.css";
+@import "./pages/sessions.css";
