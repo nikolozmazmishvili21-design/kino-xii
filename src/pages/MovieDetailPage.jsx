@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
+import { useBookingEntry } from "../auth/BookingEntryContext.js";
 import { ROUTES } from "../routing/routes.js";
 import useMovieRead from "../movie-detail/useMovieRead.js";
 import { recordRecentlyViewed } from "../utils/recentlyViewedStorage.js";
@@ -12,6 +13,7 @@ import Footer from "../components/Footer.jsx";
 export default function MovieDetailPage() {
   const { slug } = useParams();
   const { user, isAuthenticated } = useAuth();
+  const { openBooking } = useBookingEntry();
   const movie = useMovieRead(slug);
   const userId = isAuthenticated ? user?.id : null;
 
@@ -35,8 +37,7 @@ export default function MovieDetailPage() {
         {movie.status === "success" && <>
           <MovieHero movie={movie.data} />
           <div className="movie-detail-page__content">
-            {/* The real booking consumer will supply onActivate(sessionId), as on Sessions. */}
-            <MovieSessions key={slug} movie={movie.data} slug={slug} />
+            <MovieSessions key={slug} movie={movie.data} slug={slug} onActivate={openBooking} />
             <MovieDetails movie={movie.data} />
           </div>
         </>}

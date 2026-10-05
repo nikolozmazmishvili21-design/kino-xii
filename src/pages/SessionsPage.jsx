@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAppBootstrap } from "../app/AppBootstrapContext.js";
+import { useBookingEntry } from "../auth/BookingEntryContext.js";
 import Footer from "../components/Footer.jsx";
 import SessionsFilters from "../components/sessions/SessionsFilters.jsx";
 import SessionsFiltersSkeleton from "../components/sessions/SessionsFiltersSkeleton.jsx";
@@ -18,6 +19,7 @@ import {
 
 export default function SessionsPage() {
   const { filterOptions } = useAppBootstrap();
+  const { openBooking } = useBookingEntry();
   const [searchParams, setSearchParams] = useSearchParams();
   const query = parseSessionsQuery(searchParams, { filterOptions });
   const sessions = useSessions(query);
@@ -74,9 +76,8 @@ export default function SessionsPage() {
             {sessions.status === "success" && <>
               {sessions.data.length === 0 ? <div className="sessions-state"><p>No sessions found</p></div> : (
                 <div className="sessions-movies">
-                  {/* Booking entry is not implemented yet. Do not invent a route or modal here. */}
                   {sessions.data.map(({ movie, sessions: showings }) => (
-                    <SessionsMovieGroup key={movie.id} movie={movie} sessions={showings} />
+                    <SessionsMovieGroup key={movie.id} movie={movie} sessions={showings} onActivate={openBooking} />
                   ))}
                 </div>
               )}

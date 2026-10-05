@@ -4,7 +4,7 @@ import LoginForm from "../forms/LoginForm.jsx";
 import SignupForm from "../forms/SignupForm.jsx";
 import closeIcon from "../assets/icons/close.svg";
 
-export default function AuthModal({ mode, onSwitchMode, onClose, openerRef }) {
+export default function AuthModal({ mode, onSwitchMode, onClose, onSuccess = onClose, openerRef }) {
   const id = useId();
   const isSignup = mode === "signup";
 
@@ -17,7 +17,7 @@ export default function AuthModal({ mode, onSwitchMode, onClose, openerRef }) {
         </div>
         <button type="button" className="auth-modal__close" onPointerDown={(event) => { if (event.button === 0) event.preventDefault(); }} onClick={onClose} aria-label="Close authentication dialog"><img src={closeIcon} alt="" /></button>
       </div>
-      {isSignup ? <SignupForm onSwitchMode={onSwitchMode} onSuccess={onClose} /> : <LoginForm onSwitchMode={onSwitchMode} onSuccess={onClose} />}
+      {isSignup ? <SignupForm onSwitchMode={onSwitchMode} onSuccess={onSuccess} /> : <LoginForm onSwitchMode={onSwitchMode} onSuccess={onSuccess} />}
     </Modal>
   );
 }

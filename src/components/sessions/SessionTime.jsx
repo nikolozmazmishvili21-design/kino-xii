@@ -11,7 +11,7 @@ export default function SessionTime({ session, movieTitle, onActivate }) {
       aria-label={session.isSoldOut ? label : undefined}
       onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" })}>
       <button type="button" className="session-time" disabled={session.isSoldOut}
-        aria-label={label} onClick={onActivate ? () => onActivate(session) : undefined}>
+        aria-label={label} onClick={onActivate ? () => onActivate(session.id) : undefined}>
         <span className="session-time__header">
           <span className="session-time__time">{session.time}</span>
           <span className="session-time__format">{session.format.name}</span>
