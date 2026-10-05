@@ -289,15 +289,35 @@ Hover/expanded variants are wider.
 
 ### Seat Selection modal — component set `265:3958`
 
-Each main modal state is approximately 1146×599.
+The Seat Selection audit on 2026-10-05 verified the following nodes in the editable inspection file `Zeb7RQ8mjGp04YIPde2ud2`, using the second/GTU connection.
 
-Verified states:
+Component variants:
 
-- Confirmation — `265:3957`
 - Seat selection_empty — `265:3956`
 - Seat selected — `265:3954`
 - Checkout — `265:3955`
 - Checkout_Filled — `265:3953`
+- Confirmation — `265:3957`
+
+Key verified geometry for the primary empty/selected Seat Selection variants:
+
+| Element | Measurement |
+| --- | --- |
+| Modal | 1146×599; radius 28; padding 32 |
+| Main seat column / summary | 720 / 321 |
+| Seat slot/control | 52×52; radius 10 |
+| Normal horizontal seat gap / vertical row gap | 8 / 10 |
+| Sample aisle spacer | 16px |
+| Screen bar | 680×30 |
+| Progress | 720×33 |
+
+Full-page references: empty `291:20628`, selected `291:21072`, and alternate compact empty examples `408:8079` / `408:8520`. The alternate compact dialogs are 1146×660. Figma does not prove one fixed modal height for arbitrary hall geometry.
+
+All demonstrated seat grids are mock/sample geometry; `GET /sessions/{session}/seats` remains the authoritative hall layout, including sections, rows, seats, and aisles.
+
+The visible pre-hold `SEATS HELD / 7:48` timer example is documented as design content but intentionally overridden by D-024: no hold card/countdown is shown without a real live hold, because the example conflicts with the API/Assignment hold lifecycle.
+
+The selected-state subtotal of ₾32 is internally inconsistent with its three visible ₾16 Adult cards. Derive prices and subtotal from configuration/local preview state, then authoritative server hold values, as defined in D-024.
 
 ### Seat summary components
 
@@ -331,12 +351,12 @@ Verified states:
 
 ### Seat state component set — `119:3146`
 
-- Held — `119:3145`
 - Default — `119:3143`
-- Disabled — `119:3142`
 - Selected — `119:3144`
+- Held — `119:3145`
+- Disabled — `119:3142`
 
-Each seat visual state is approximately 52×52.
+Each verified seat visual state is 52×52 with radius 10. The component-set canonical seat-number typography is Archivo 18 / 800; some map instances override it to 14px. D-024 treats those overrides as mock inconsistency, not a state/business rule.
 
 ### Seat row
 

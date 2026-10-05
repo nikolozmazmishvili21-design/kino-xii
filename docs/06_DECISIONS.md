@@ -1358,6 +1358,364 @@ This decision does not implement Movie Detail or the later booking flow, and doe
 
 ---
 
+## D-024 — Seat Selection presentation, pre-hold behavior, and staged booking entry
+
+**Status:** Accepted
+**Date:** 2026-10-05
+
+### Decision
+
+The following policies resolve the Seat Selection audit gaps and approve separate implementation checkpoints. They preserve D-010 hold persistence, D-012 Checkout Back/live-hold behavior, D-013 desktop behavior, D-023 protected booking/profile entry, and the accepted booking state architecture.
+
+### A. API seat map is the only hall geometry source
+
+Render `sections[] → rows[] → seats[]` from `GET /sessions/{session}/seats`. Do not flatten sections or hardcode rows, seat counts, letters, aisle positions, section widths, or hall shapes.
+
+Use:
+
+- `seat.id` for selection/request identity
+- `seat.code` for summaries
+- `seat.label` for the visible seat number
+- `seat.state` for server availability
+- `seat.aisleAfter` for a visual gap to the right
+- `seat.isMine` for own-hold recognition
+
+Unavailable seats preserve their spatial slot but render no interactive seat button.
+
+### B. Seat state → visual / interaction mapping
+
+| Condition | Visual | Interaction |
+| --- | --- | --- |
+| Available and not locally selected | Figma Default | Selectable below the configured selection cap |
+| Locally selected | Figma Selected | Deselectable |
+| Sold | Figma Disabled | Disabled |
+| Held by another user | Figma Held | Disabled |
+| Unavailable | No seat control | Spatial gap only |
+| `isMine` | Own-held/Selected presentation | Requires verified restoration context for active selection; see §C |
+
+Interpret `isMine` separately from `state`. Do not assume an own-held seat always has a particular state enum value.
+
+### C. Own-hold without verified restoration context
+
+`isMine` alone does not provide a hold ID, ticket type, or authoritative held-seat price.
+
+Visually distinguish the seat as owned/Selected, but do not guess Adult, automatically add it to the local selected-seat summary/subtotal, or treat it as a fresh available seat.
+
+Only hydrate own-held seats into active booking selection after the complete accepted D-010 restoration flow succeeds. All of the following are required, not independent alternatives:
+
+1. find the persisted `{ holdId, sessionId }`
+2. require valid/restored authentication
+3. successfully call `GET /holds/{hold}`
+4. verify the returned hold is live
+5. obtain ticket assignments and prices from the returned hold
+6. refetch the authenticated seat map
+7. reconcile `isMine` seats against that verified hold
+
+Only after this full flow may own-held seats enter active booking selection. `isMine` alone is not enough.
+
+If an own-held seat appears without recoverable hold context, keep it non-editable in the current local selection flow rather than inventing missing booking data. Do not invent a hold-discovery endpoint.
+
+If a later hold mutation for the same session replaces an older user hold, the subsequent server response/refetch is authoritative. The UI must not visually promise that an unrecoverable old own-held seat remains reserved.
+
+### D. Seat typography
+
+Use the Seat component-set canonical seat-number typography, Archivo 18 / 800, for normal seat controls.
+
+Some Figma map instances override numbers to 14px. Treat those overrides as mock inconsistency, not a state/business rule. Do not vary number typography by seat state unless a verified component variant requires it.
+
+### E. Map slot / aisle geometry
+
+Preserve the verified geometry:
+
+- seat slot/control: 52×52
+- seat radius: 10
+- ordinary horizontal gap: 8
+- row vertical gap: 10
+- aisle spacer: 16px, inserted after the seat whose `aisleAfter` is true
+
+Do not shrink seats or normal gaps to force a real hall into the 720px sample width. Row labels remain separate from seat slots.
+
+### F. Dynamic map overflow
+
+Figma samples do not represent all production hall shapes. The verified desktop Seat Selection map column remains 720px wide, even when real API rows are wider.
+
+Preserve real seat geometry and center a row within the map canvas when it fits. Row content may use a wider internal canvas, but its viewport remains 720px. Wide canvases scroll horizontally inside that map column so right-side seats remain reachable.
+
+Do not expand the 1146px primary desktop dialog merely to fit a wider hall row. Do not shrink seats or proportionally scale them down.
+
+Use a deliberate vertical scroll region for seat-map content when multiple API sections exceed the sample allocation, so every section heading, row, seat, and legend remains reachable.
+
+Keep progress and the summary/sidebar outside the seat-map content scroll where the desktop viewport permits. For a shorter desktop viewport, the booking dialog itself may become vertically scrollable so no control becomes unreachable.
+
+Do not invent mobile/tablet breakpoints.
+
+### G. Screen / section / legend dynamic behavior
+
+Preserve the verified screen-bar design. Render API section names in API order; headings must be API-derived.
+
+Do not reuse mock text such as `STALLS · ROWS A-E` when it does not match actual data. If a useful row-range label is shown, derive it from the actual first/last API row labels without implying missing intermediate letters.
+
+Keep the legend available after/alongside map content according to the approved scroll layout.
+
+### H. Pre-hold timer
+
+Local seat selection does not reserve seats. A real hold is created only after the hold endpoint succeeds.
+
+While no real live SeatHold exists:
+
+- do not show `SEATS HELD`
+- do not show a countdown
+- do not start a local timer
+- do not show placeholder hold time
+- omit the hold timer card from the pre-hold Seat Selection header
+
+After a successful real hold exists in the later hold/Checkout checkpoint, render the hold card and derive its countdown from server `expiresAt`. Never treat a fixed 8-minute local decrement as authoritative.
+
+Figma's pre-hold `SEATS HELD / 7:48` example is intentionally not implemented literally because it contradicts the real hold lifecycle. This resolves the conflict in favor of OpenAPI/Assignment over Figma.
+
+### I. Maximum seat interaction
+
+The cap comes only from `filterOptions.maxSeatsPerOrder`; do not hardcode 3.
+
+Selected seats remain deselectable at the cap. Other server-available seats remain visually in their normal available state.
+
+When the user attempts to add another seat after reaching the cap, leave selection unchanged and show accessible inline/status feedback with dynamic copy:
+
+`You can select up to {maxSeatsPerOrder} seats.`
+
+Clear or update stale max-seat feedback when selection changes. Do not disable already-selected seats or turn server-available seats into fake sold/held states.
+
+### J. Ticket types
+
+Ticket types come only from `filterOptions.ticketTypes`. Do not hardcode Adult, Child, Student, their ratios, or restrictions.
+
+Identify the default Adult type by the API-defined `adult` slug. A newly selected seat defaults to that returned Adult record.
+
+Changing ticket type is local-only until hold creation. Deselecting a seat removes its ticket-type assignment.
+
+For each ticket type:
+
+- if `ticketType.blockedFromRatingAge` is null, the type is not blocked by this rule
+- if it is non-null, block/omit the type when `movie.ageRating.minAge >= ticketType.blockedFromRatingAge`
+
+Use server values only. Do not hardcode 16 or special-case Child by name when the API rule already provides the restriction.
+
+Do not invent additional Student validation fields. The API-provided note may be presented where the design supports it.
+
+### K. Client price preview / rounding
+
+Before a real hold exists, prices are client-side previews only.
+
+For each selected seat:
+
+`rawPreview = session.price × ticketType.priceRatio`
+
+Convert each per-seat preview to normal GEL currency precision:
+
+- round the per-seat preview to 2 decimal places
+- do not use integer-only rounding
+- calculate subtotal as the sum of those rounded per-seat preview values
+- present trailing decimals only when needed by the existing currency presentation style
+
+Do not add format uplift again.
+
+After successful hold creation in the later checkpoint, `SeatHold.seats[].price` and `SeatHold.subtotal` become authoritative. If returned values differ from the pre-hold preview, render server values rather than preserving the client preview.
+
+Client preview must never override server hold/order totals.
+
+### L. Figma selected-seat sample values are not business rules
+
+The inspected selected Figma state shows exactly three selected seats, Adult on each card, ₾16 per card, and subtotal ₾32. The subtotal is inconsistent with the visible cards.
+
+Do not reproduce the mock subtotal, infer a fixed three-seat requirement, or infer Adult-only selection. Derive selection, ticket types, and preview subtotal from API/configuration/local state. `maxSeatsPerOrder` controls the cap.
+
+### M. Summary sidebar
+
+Use selected-seat cards. Each selected seat shows its code, calculated preview price, remove action, and ticket-type selector.
+
+Ticket-type labels and ratios are API-driven. The verified selected-state order may be preserved visually where compatible, but do not hardcode type count or names. Omit blocked types.
+
+Interpolate the actual configured maximum in the summary heading and helper copy. The verified Seat Selection summary uses `SUBTOTAL`; do not invent a separate fee/total row in this step.
+
+### N. Booking close control
+
+No close control was verified inside the inspected Seat Selection Figma component. The project modal architecture requires a reliable explicit close path where the composed booking dialog provides one, alongside Escape/backdrop behavior as permitted.
+
+Kino XII chooses a top-right booking close control in the dialog header using the existing project modal/close-control visual language. This is an accepted project UI decision, not a claimed Figma fact or a general Assignment mandate for a visible close control on Seat Selection itself.
+
+Before a real hold exists, closing through the close control, Escape, or allowed backdrop click may abort active reads, clear local Seat Selection state, and close the overlay. No release request is required because no hold exists.
+
+After a real hold exists, use accepted hold-release/abandonment rules. Do not reuse pre-hold close behavior after a live hold is created. Preserve D-012: Checkout Back stays in the active flow and does not release its live hold.
+
+### O. Loading / error fallbacks
+
+No exact Seat Selection loading/error Figma variant is verified. Use conservative design-system fallback states; do not draw a fake seat grid while the real map is unknown.
+
+Required states include session-context loading, seat-map loading, terminal 404, network/server error, Retry, and runtime auth-expiry handoff.
+
+Keep loading/error UI within the dialog with accessible status/error announcements. Retry uses the current session ID. Aborts from close/session replacement are silent.
+
+### P. Booking entry contract
+
+Both existing entry surfaces converge on `openBooking(sessionId)`. Current Movie Detail and Sessions callbacks may adapt to that contract.
+
+Do not duplicate authentication/profile logic per page or create a booking route. Booking remains an overlay/state flow.
+
+The bounded protected-action descriptor remains:
+
+```js
+{
+  type: "OPEN_BOOKING",
+  payload: {
+    sessionId
+  }
+}
+```
+
+Do not persist full Movie or Session objects in the pending action.
+
+### Q. Protected-action / profile sequencing
+
+D-023 remains authoritative. For a guest booking action:
+
+1. preserve bounded `OPEN_BOOKING(sessionId)`
+2. authenticate
+3. inspect server-returned `profileComplete`
+4. if incomplete, require real Profile completion
+5. after API-confirmed complete profile, replay booking once
+6. clear pending action safely
+
+For an already authenticated incomplete-profile user, preserve the same action, require Profile completion, and replay once after API confirmation.
+
+Do not open Seat Selection before profile completion. The current placeholder Profile page cannot satisfy this flow.
+
+### R. Implementation checkpoint sequence
+
+Approve the following separate checkpoints:
+
+**CHECKPOINT A — Protected-action/shared booking-entry infrastructure**
+
+Scope:
+
+- shared `openBooking(sessionId)` entry
+- bounded pending action
+- auth handoff
+- replay-once guards
+- cancellation/cleanup
+- current-user replacement support needed for future profile completion
+
+Do not claim incomplete-profile booking is complete in A.
+
+**CHECKPOINT PROFILE — Real Profile completion UI/API integration**
+
+Save the confirmed profile fields, use the returned server User, update AuthProvider's user, expose API-confirmed `profileComplete`, and allow the pending `OPEN_BOOKING` action to replay once.
+
+**CHECKPOINT B — Seat Selection foundation**
+
+Scope:
+
+- booking overlay/dialog
+- GET session context
+- GET seat map
+- BookingProvider/reducer
+- dynamic seat map
+- local selection
+- API-driven ticket types
+- client preview summary
+- accessibility
+- loading/error states
+- both booking-entry consumers
+
+No hold mutation yet.
+
+**CHECKPOINT HOLD — Real hold creation and conflict/restoration behavior**
+
+Scope:
+
+- POST hold
+- pending guard
+- 409 reconciliation
+- 422 business/validation handling
+- minimal hold storage
+- `expiresAt` timer
+- restoration
+- release/abandonment rules
+- transition into Checkout
+
+**CHECKOUT remains its own subsequent feature checkpoint.** Do not merge these into one giant commit.
+
+### S. Intermediate Checkpoint B — Next button
+
+Assignment requires `Next: Checkout` to create a real hold and proceed only after successful hold creation.
+
+Checkpoint B must not expose an enabled control that appears to perform this transition while hold creation is unimplemented.
+
+During Checkpoint B only:
+
+- render the verified `Next: Checkout` control
+- keep it natively disabled even when local selection is otherwise valid
+- document this as an intermediate implementation limitation
+- do not add a fake click handler
+- do not navigate to Checkout
+- do not simulate a hold
+- do not start a timer
+
+The HOLD checkpoint replaces this temporary disabled boundary with real enabled behavior when all normal prerequisites are satisfied.
+
+This is not the final feature behavior. List it as deferred in Checkpoint B review/QA.
+
+### T. Booking state ownership
+
+Introduce BookingProvider/reducer when shared active booking state begins. BookingProvider owns current booking session ID/context, seat map/read state, selected seats, ticket assignments, booking step, and later hold/order state.
+
+Pending protected-action state remains separate from selected-seat booking state.
+
+Do not store authoritative seat selection in localStorage/sessionStorage. Only the later accepted minimal hold reference may be persisted, preserving D-010.
+
+### U. Async safety
+
+Booking/session/map reads must guard open session A → close → open session B, repeated same-session opens, stale responses arriving after close, and auth handoff/replay.
+
+Use AbortController where practical plus explicit request/version identity where needed. Closing the pre-hold modal aborts/obsoletes reads. No stale response may reopen or overwrite current booking state.
+
+### V. Accessibility
+
+Seat Selection must support:
+
+- accessible dialog title/description association
+- focus containment
+- Escape behavior
+- focus restoration to the original session trigger
+- native seat buttons
+- `aria-pressed` or equivalent selected semantics
+- meaningful seat accessible names including code/state/context
+- native disabled behavior for sold/held seats
+- non-color distinction between Held and Sold
+- unavailable gaps excluded from tab order
+- labeled ticket-type groups per seat
+- labeled remove controls
+- accessible max-seat feedback
+- accessible subtotal updates
+- loading/error announcements
+- disabled Next semantics during Checkpoint B
+
+Do not make seat state understandable by color alone.
+
+### Reason
+
+Resolve the correctness-affecting Seat Selection policies before coding, preserve API authority over hall geometry and live booking state, and make the temporary implementation boundary explicit without simulating reservations or Checkout.
+
+### Affected
+
+- later shared protected booking entry and Profile-completion replay
+- later Seat Selection rendering, selection, preview pricing, and accessibility/visual QA
+- later hold/Checkout lifecycle integration
+- Seat Selection references in `docs/03_FIGMA_REFERENCE.md`
+
+This decision documents policy only; it does not implement booking entry, Profile, Seat Selection, holds, or Checkout, and does not modify architecture.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
