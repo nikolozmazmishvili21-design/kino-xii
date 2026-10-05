@@ -1716,6 +1716,296 @@ This decision documents policy only; it does not implement booking entry, Profil
 
 ---
 
+## D-025 — Profile completion, validation, and protected reauthentication
+
+**Status:** Accepted
+**Date:** 2026-10-05
+
+### Decision
+
+Approve the following CHECKPOINT PROFILE policies. Preserve D-019 form/validation architecture, D-023 protected booking/profile sequencing, D-024 staged checkpoints, and Checkpoint A's single pending/READY action semantics. Server-returned User remains authoritative.
+
+### A. Profile Personal Information field set
+
+Implement only the five fields verified in the Personal Information design:
+
+| Field | Editing / completion policy |
+|---|---|
+| Full Name | Editable; required by `PUT /profile` and for profile completion |
+| Email | Visible, read-only and programmatically immutable; omitted from the payload |
+| Mobile Number | Editable; required by `PUT /profile` and for profile completion |
+| Date of Birth | Editable; required by `PUT /profile` and for profile completion |
+| Preferred Venue (Optional) | Editable within §H–I; optional; not a completion requirement |
+
+Email helper: `Set at registration and cannot be changed`.
+
+Do not add Username to the form: `PUT /profile` does not support updating it. Do not add fields merely because they exist on User.
+
+### B. Avatar is deferred from Profile UI
+
+`PUT /profile` supports optional avatar upload, but the inspected Personal Information frame contains no upload control, the Assignment Profile form does not establish avatar-edit UI, and removal semantics are undefined.
+
+CHECKPOINT PROFILE exposes no avatar upload, replacement, or removal and appends no avatar field to FormData. The returned avatar remains authoritative and continues rendering through existing authenticated identity/Navbar UI. Do not invent delete/remove semantics. A future avatar-edit feature requires its own verified presentation/behavior scope.
+
+### C. Profile completeness
+
+Use only returned `user.profileComplete`; do not derive completeness from the local draft. Booking requires server-confirmed complete profile.
+
+API completion requires `fullName`, `mobileNumber`, and `dateOfBirth`. Preferred venue and avatar do not control completeness. A locally valid form is not a complete profile until `PUT /profile` succeeds and returned User confirms it.
+
+### D. API-derived age
+
+Use only returned `user.age` as account age for booking eligibility. Do not calculate replacement age from `dateOfBirth`.
+
+Client DOB calculations are allowed only for the confirmed Profile validation boundary requiring DOB to be at least 12 years ago. After save, render returned age and `profileComplete`; independently override neither.
+
+### E. Date of Birth control
+
+Use native semantic `<input type="date">`. Style its visible shell to match verified Profile input geometry and use the verified calendar visual where compatible. Do not build a custom calendar/date-picker.
+
+Client validation may mirror required, valid date, not in the future, and at least 12 years old. Use local calendar-date arithmetic for the 12-year boundary. This is Profile-form UX validation only, never authoritative account age.
+
+### F. Mobile Number input / normalization
+
+Use no masking library or country-code UI. Ordinary spaces are allowed, for example `599 123 456`; preserve the visible draft as typed during editing.
+
+For client validation and submission, remove ordinary spaces from a normalized copy, validate that copy, and submit the normalized 9-digit value. Do not invent hyphen or prefix normalization. After success, reset the draft/baseline from returned User and display server-returned `mobileNumber`.
+
+Client validation precedence:
+
+1. Empty after normalization: `Mobile number is required`.
+2. Non-digit characters after allowed spaces are removed: `Please enter a valid Georgian mobile number (9 digits starting with 5)`.
+3. Does not start with 5: `Georgian mobile numbers must start with 5`.
+4. Length is not exactly 9: `Mobile number must be exactly 9 digits`.
+
+Server 422 field messages remain authoritative after submission.
+
+### G. Confirmed Profile validation
+
+Mirror only confirmed Assignment/OpenAPI rules:
+
+| Field / failure | Exact client message |
+|---|---|
+| Full Name empty | `Name is required` |
+| Full Name fewer than 3 characters | `Name must be at least 3 characters` |
+| Full Name more than 50 characters | `Name must not exceed 50 characters` |
+| Mobile Number | Apply §F precedence and messages |
+| DOB empty | `Date of birth is required` |
+| DOB invalid/future | `Please enter a valid date of birth` |
+| DOB under 12 | `You must be at least 12 years old to create an account` |
+
+Show confirmed field validation feedback on blur. While editing, current client validation controls Save enablement under §N. Run full validation again on submit as a safety net; if it fails despite the button previously being eligible, block the request, expose field errors, and focus the first invalid field. Clear stale server field errors when their associated values change. Invent no additional business validation.
+
+Map server 422 `errors[field]` arrays directly to the relevant fields, including `preferredVenueId` errors on the Preferred Venue control. Focus the first field with a returned error when practical; keep server strings authoritative. Message-only failures render the returned server message.
+
+### H. Preferred Venue source
+
+Options come only from `filterOptions.venues`; never hardcode venues. Initialize from `user.preferredVenue?.id`. Submit a selected venue's API integer ID as `preferredVenueId`, not its slug, Venue object, or display name.
+
+### I. Preferred Venue null / clearing boundary
+
+OpenAPI makes `preferredVenueId` optional and nullable, but does not define multipart encoding to explicitly clear an existing non-null preference. Do not invent literal `"null"` or blank-string backend semantics.
+
+Accepted behavior:
+
+- Server preference null: show an empty/placeholder choice; it may remain empty, with `preferredVenueId` omitted from FormData. The user may select a venue and return the unsaved draft to empty while the authoritative baseline remains null.
+- Server preference non-null: preselect it; allow keeping it or replacing it with another API venue. Expose no action to clear that existing preference in this checkpoint.
+
+Document this limitation in implementation QA. A future clear-preference action requires verified backend null encoding.
+
+### J. Profile status banner — source resolution
+
+OpenAPI explicitly requires `profileComplete` to drive a Profile-page banner; the inspected Personal Information frame visibly omits one. Resolve behavior as OpenAPI over Figma omission.
+
+Place the banner in Personal Information between the tabs/divider and form, aligned to the verified 880px form column. Shift the form downward; do not overlay controls. This page placement is accepted project UI policy, not a Figma fact.
+
+Reuse verified Profile-menu status visual language:
+
+- Incomplete: orange/warning treatment; `#E27E04` at 10% background treatment; radius 10; title `Profile incomplete`; Profile-page supporting copy `Please complete your profile to enable booking.`
+- Complete: green/success treatment; `#4ADE80` at 10% background treatment; radius 10; title `Profile Complete`; verified check-icon treatment where reusable.
+
+For complete status, the visible title remains `Profile Complete`, available as accessible text. The verified check icon may provide the visual ✓ treatment, but accessibility must not depend on the icon alone. Hide decorative check icons from assistive technology unless they add a distinct accessible label.
+
+The final period is required for the Profile-page incomplete supporting copy. The verified account-menu wording may remain unchanged. Do not change the existing account-menu status component merely to implement the page banner.
+
+### K. Eligibility / age copy
+
+Use server-returned age only. Use `filterOptions.ageRatings` only to determine whether that age meets every configured rating minimum.
+
+For `profileComplete === true`, a valid returned numeric age, and age at least the maximum `ageRatings[].minAge`, render:
+
+`You are {age}, you can buy tickets for all age ratings.`
+
+This generalizes the OpenAPI example. Make the all-ratings claim only when API-provided thresholds support it.
+
+Otherwise, for a complete profile with returned numeric age, render conservative project copy:
+
+`Age on your account: {age}. Film age restrictions are applied when booking.`
+
+For null age, invent no value and omit age-specific eligibility copy.
+
+### L. Profile form payload
+
+`PUT /profile` uses multipart/form-data. Let browser/fetch set the multipart Content-Type and boundary automatically; set neither manually.
+
+Required FormData entries: `fullName`, `mobileNumber`, `dateOfBirth`. Append `preferredVenueId` only for a concrete selected ID under §I.
+
+Do not append `email`, `username`, `avatar`, `profileComplete`, or `age` in this checkpoint.
+
+### M. Form initialization / source of truth
+
+Initialize from current AuthProvider User, mapping nullable fields to safe empty form values. Track a local draft and saved baseline; create no second authoritative Profile store.
+
+After success:
+
+1. Use returned User and call `replaceUser(returnedUser)`.
+2. Require replacement to be accepted before reporting success.
+3. Reset local baseline/draft from returned User.
+4. Render returned `profileComplete` and age.
+
+Never optimistically mutate current User.
+
+### N. Save button / success behavior
+
+Save Changes must be disabled when any of these is true: the form has no unsaved changes, current client-side form validation fails, or a Profile save mutation is pending. Enable Save only when the draft is dirty AND valid AND no save request is pending. This is an Assignment requirement.
+
+Run full submit-time validation as a safety net before building or sending FormData. If validation fails because state changed between enablement and submit, block the request, expose field errors, and focus the first invalid field.
+
+Prevent redundant saves and permit only one active PUT at a time. While PUT is pending, disable Save, expose loading/pending state, and prevent duplicate submission. On accepted successful save, announce `Profile saved successfully.` through accessible status feedback.
+
+Remain on `/profile` after a normal save; do not navigate Home on success.
+
+### O. Booking-driven Profile completion
+
+D-023 and Checkpoint A remain authoritative. On successful PUT with pending `OPEN_BOOKING`, use returned User, call `replaceUser(returnedUser)`, and inspect returned `profileComplete`.
+
+- True: Checkpoint A moves the same pending action to READY exactly once, without a second session click. Profile must neither call `openBooking` again nor consume READY itself.
+- False: remain on Profile, preserve pending `OPEN_BOOKING`, and produce no READY.
+
+CHECKPOINT PROFILE has no Seat Selection consumer. After reaching READY, remain on Profile; show no fake Seat Selection or booking route, claim no hold, and show no timer. Document this intermediate limitation. CHECKPOINT B later consumes READY automatically.
+
+### P. Normal Profile editing
+
+Already-complete users use the same form and PUT endpoint. Every successful save uses authoritative returned User: `profileComplete` may be true or false, age and preferred venue may change, and Navbar/account-menu state updates accordingly. Do not assume completeness only moves false → true.
+
+Editing with no pending booking updates User without creating booking intent or navigating into booking flow.
+
+### Q. Direct /profile access
+
+`/profile` is authenticated-only. A guest direct visit must not render editable Profile data and must open the existing Login flow. Preserve `/profile` as the protected destination in transient in-memory coordination across Login ↔ Sign Up switching.
+
+This Profile-access continuation is separate from bounded `OPEN_BOOKING`. Create no fake booking action, place no token/action in the URL, and do not persist the continuation.
+
+After successful Login or Sign Up, remain/navigate to `/profile` and initialize from returned authenticated User. A newly registered incomplete user can then complete Profile.
+
+On cancellation of the entire auth flow, clear the transient continuation and navigate Home `/`.
+
+Returning Home on cancellation is an accepted Kino XII project navigation policy, not an OpenAPI, Assignment, or Figma-defined destination.
+
+### R. PUT /profile 401 reauthentication
+
+A Profile-save 401 means expired/revoked auth. Do not automatically retry PUT, fabricate a booking session ID, call logout POST for expiry, or add a speculative global 401 interceptor.
+
+For a current save receiving 401:
+
+1. Invalidate only stale auth using expected-auth/request guards.
+2. Preserve the Profile draft in memory.
+3. Open the existing Login flow.
+
+If `OPEN_BOOKING` is already pending, preserve its descriptor and use existing booking-aware reauthentication coordination where appropriate. Without pending booking, use the transient Profile reauthentication continuation.
+
+After successful reauthentication:
+
+- Same user ID: retain the unsaved draft, remain on `/profile`, do not replay PUT, and announce `Session restored. Review your changes and save again.`
+- Different user ID: immediately discard the previous user's draft and initialize from newly authenticated User. Never expose the prior user's full-name/mobile/DOB draft to the new account.
+
+On reauthentication cancellation, discard the stale protected draft, clear transient Profile reauth continuation, and navigate Home. Existing Checkpoint A booking cancellation/cleanup remains in force.
+
+Returning Home here follows the accepted Kino XII project navigation policy in §Q; it is not an OpenAPI, Assignment, or Figma-defined cancellation destination.
+
+A late/stale 401 from an obsolete save must never clear newer authentication.
+
+### S. Draft / mutation race safety
+
+Require one active PUT, explicit pending state, request identity/generation, auth/user snapshot guard, and unmount protection.
+
+Ignore stale success/error/401 after logout, replacement by another authenticated user, navigation/unmount, or a newer valid Profile interaction invalidating the request. A late response must never resurrect old User. Use existing `replaceUser` safeguards; no automatic mutation retry.
+
+### T. My Tickets checkpoint boundary
+
+Render the Profile navigation shell with Personal Information visibly active and My Tickets visibly present but unavailable/disabled. Include no hardcoded ticket-count badge; Figma's `2` is example content, not application data.
+
+Call no `GET /tickets`; render no fake tickets, fake empty ticket content, or refunds. Only one panel is functional: use appropriate accessible navigation/button semantics, not full ARIA tab semantics without a second interactive tab/panel. Tickets/refunds remain a later checkpoint.
+
+### U. Figma Personal Information geometry
+
+Editable implementation-inspection source: `Zeb7RQ8mjGp04YIPde2ud2`, second/GTU connection. Primary reference: `284:13298` — `My profile_Information`.
+
+| Element | Verified base geometry / style |
+|---|---|
+| Frame / page background | 1728×959; `#070C1C` |
+| Navbar | 1728×111 |
+| Heading/tabs region | x=51, y=117.5, width=1626, height=88; 1px bottom divider |
+| Heading | `My Profile`; Archivo ExtraBold 800, 24px |
+| Tabs | 271×33; gap 32; Archivo SemiBold 600, 14px |
+| Active underline | 139×2; `#EC3013` |
+| Form | x=51, raw y=247.5, width=880, height=495 |
+| Field / Email blocks | 63px / 84px including helper |
+| Input | 880×40; radius 12; horizontal padding 16; label-to-input gap 10 |
+| Labels | Archivo SemiBold 600, 12px |
+| Input fill / muted text | `#1E2031` / `#A9A9A9` |
+| DOB / venue icons | Approximately 16×16 |
+| Save button | 143×41; radius 999; padding 13px 22px; Archivo ExtraBold 800, 14px; `#EC3013` |
+| Footer | y=861; 1728×98 |
+
+The §J banner intentionally shifts the form below its raw Figma y-position. Do not label the shifted implementation position as a Figma measurement.
+
+### V. Figma Profile status references
+
+Incomplete Profile menu `355:11310`: orange 8px avatar dot; `#E27E04` surface at 10% opacity; radius 10; `Profile incomplete` and `Please complete your profile to enable booking`.
+
+Complete Profile menu `355:11309`: green 8px avatar dot; `#4ADE80` surface at 10% opacity; radius 10; `Profile Complete` with check icon.
+
+Existing Navbar/ProfileDropdown continues deriving states from returned User. No Profile-menu redesign is required.
+
+### W. Figma input states
+
+References: Default `263:3549`, Hover `263:3551`, Focused `263:3561`, Filled `263:3731`, Error `263:3595`, Success `263:3607`.
+
+Reuse matching existing project form-field styling. Do not duplicate an unrelated input design system.
+
+### X. Figma Navbar conflict
+
+Inspected frame `284:13298` contains an Unauthorized Navbar instance. Assignment requires authenticated-only Profile, the API endpoint is protected, and accepted architecture already supplies authenticated Navbar/ProfileDropdown behavior.
+
+Retain the authenticated application Navbar on `/profile`. Treat the frame's unauthorized Navbar as a source inconsistency/sample composition; do not regress runtime behavior to copy it literally.
+
+### Y. Accessibility
+
+Provide semantic `main`, `h1`, associated labels, helper/error associations, appropriate `aria-invalid`, visible focus, first-error focus after invalid submit, programmatically read-only Email, keyboard-usable native date and Preferred Venue controls, saving status, success/error announcements, and incomplete status understandable without color alone.
+
+Provide disabled My Tickets semantics and no fake tab semantics.
+
+### Z. CHECKPOINT PROFILE scope
+
+Approve real authenticated Profile access, Personal Information visuals, five-field form, status banner, exact client validation, multipart PUT integration, server 422 mapping, accepted returned-User replacement, returned completeness/age rendering, API venues, normal editing, pending booking completion → READY once, direct Profile auth continuation, guarded save-401 reauthentication, async/stale mutation safety, accessible fallback/error/success states, and visible disabled My Tickets shell.
+
+Explicitly defer Profile avatar editing/removal, clearing an existing non-null preferred venue until multipart-null encoding is verified, My Tickets API/content, refunds, Seat Selection, seat map, holds, timer, Checkout, and Confirmation.
+
+### Reason
+
+Resolve Profile correctness and presentation policies before implementation while preserving API authority, bounded booking replay, auth/draft safety, and the accepted staged sequence. Keep unsupported avatar/removal and venue-clearing semantics outside this checkpoint.
+
+### Affected
+
+- later Profile API/form, validation, status/eligibility rendering, and accessibility/QA
+- minimal protected Profile access/reauthentication integration with AuthProvider and AppShell
+- Profile references in `docs/03_FIGMA_REFERENCE.md`
+
+This decision documents policy only. It implements no Profile, booking, or ticket functionality and modifies no architecture.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:

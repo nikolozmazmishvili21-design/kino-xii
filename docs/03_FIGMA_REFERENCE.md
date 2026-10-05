@@ -112,6 +112,43 @@ Use these for:
 - Personal Information tab
 - Tickets tab variants / states
 
+#### Profile implementation reference — verified 2026-10-05
+
+Verified in editable inspection file `Zeb7RQ8mjGp04YIPde2ud2` through the second/GTU connection. Primary Personal Information reference: `284:13298`. Profile-menu states: incomplete `355:11310`, complete `355:11309`.
+
+| Element | Verified base geometry / style |
+|---|---|
+| Screen / background | 1728×959; `#070C1C` |
+| Navbar | 1728×111 |
+| Heading/tabs region | x=51, y=117.5, 1626×88; 1px bottom divider |
+| Heading | `My Profile`; Archivo ExtraBold 800, 24px |
+| Tabs | 271×33; gap 32; Archivo SemiBold 600, 14px |
+| Active underline | 139×2; `#EC3013` |
+| Form | x=51, raw y=247.5; 880×495; single column |
+| Field / Email blocks | 63px / 84px including Email helper |
+| Inputs | 880×40; radius 12; horizontal padding 16; label-to-input gap 10 |
+| Labels / input fill / muted text | Archivo SemiBold 600, 12px; `#1E2031`; `#A9A9A9` |
+| DOB / venue icons | Approximately 16×16; calendar / arrow |
+| Save button | 143×41; radius 999; padding 13px 22px; Archivo ExtraBold 800, 14px; `#EC3013` |
+| Footer | y=861; 1728×98 |
+
+Visible fields: Full name, Email, Mobile number, Date of birth, and Preferred Venue (Optional). Email helper: `Set at registration and cannot be changed`. No Profile avatar upload control or page-level status banner is visible in this frame.
+
+Verified Profile-menu status language:
+
+- Incomplete `355:11310`: orange 8px avatar dot; `#E27E04` status surface at 10% opacity, radius 10; `Profile incomplete` and `Please complete your profile to enable booking`.
+- Complete `355:11309`: green 8px avatar dot; `#4ADE80` status surface at 10% opacity, radius 10; `Profile Complete` with check icon.
+
+Input-state references: Default `263:3549`, Hover `263:3551`, Focused `263:3561`, Filled `263:3731`, Error `263:3595`, Success `263:3607`. Reuse matching existing project form-field styling.
+
+Accepted implementation resolutions are recorded in D-025 in `docs/06_DECISIONS.md`:
+
+- OpenAPI explicitly requires `profileComplete` to drive a Profile-page banner. D-025 places it between the tabs/divider and form, aligned to the 880px form column. This shifts the form below its raw y=247.5; the added banner placement and shifted position are project UI policy, not Figma measurements.
+- The raw frame uses an Unauthorized Navbar instance. Runtime Profile retains the authenticated application Navbar because Assignment/API require protected Profile access.
+- The My Tickets count `2` is mock/example content, not application data; do not hardcode it.
+
+The provenance/editable-copy divergence rule remains unchanged. Verify exact live nodes during implementation; the added page banner is not a Figma-defined state.
+
 ### Overlays — section `355:15478`
 
 - Authorization overlay — `272:4462` — 403×399
