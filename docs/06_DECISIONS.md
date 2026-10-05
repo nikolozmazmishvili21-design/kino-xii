@@ -1109,6 +1109,255 @@ The completed Sessions data/URL foundation remains unchanged. No architecture-do
 
 ---
 
+## D-023 — Movie Detail presentation and pre-booking behavior
+
+**Status:** Accepted
+**Date:** 2026-10-05
+
+### Decision
+
+### A. Date source and calendar range
+
+`movie.availableDates` is the authoritative set of selectable Movie Detail dates. Do not manufacture a selectable date absent from `availableDates`.
+
+The visual date row is calendar-based:
+
+- start at the user's current local calendar date
+- render at least today through today + 6 days
+- if the latest chronological date present in `movie.availableDates` is later than today + 6, extend the horizontal calendar range through that date
+- determine that date chronologically; do not rely on array position or assume `availableDates` is pre-sorted
+- dates inside the rendered calendar range that are absent from `availableDates` are visible but disabled
+- enabled dates are only dates present in `availableDates`
+
+This preserves the Figma seven-date initial composition, calendar continuity, disabled empty dates, and access to valid later API dates.
+
+The row may scroll horizontally when the calendar range exceeds the visible Figma width. Do not invent carousel arrows unless a later verified source requires them.
+
+If API dates unexpectedly precede today, do not make past dates selectable merely because they are present. Report the backend/source inconsistency instead of silently redefining “upcoming”.
+
+### B. Initial selected date
+
+Initial Movie Detail selected date is:
+
+1. today, if today exists in `movie.availableDates`
+2. otherwise the first upcoming available date returned by the API
+3. otherwise `null`
+
+Do not default to an unavailable date.
+
+Selected date is page-local state. Do not add a Movie Detail date query parameter. Refresh may recompute the initial selection from current API data.
+
+### C. Fewer than seven / no available dates
+
+If fewer than seven dates have sessions:
+
+- still render the initial seven-calendar-day composition
+- non-available calendar dates are disabled
+- do not invent sessions for them
+
+If `availableDates` is empty:
+
+- no date is selected
+- all displayed calendar chips are non-bookable/disabled
+- show a clear design-system empty state for the Sessions area
+- do not request movie-date sessions without a selected valid date merely to fabricate content
+
+Exact empty-state styling is not Figma-defined. Use a conservative design-system fallback and do not claim it is an exact Figma state.
+
+### D. Sessions subtitle / count
+
+Figma example text such as `22 sessions over the next seven days` must not cause seven/multiple aggregate API reads merely to recreate the mock count. There is no aggregate Movie Detail endpoint for that value.
+
+Use data already returned for the selected date. After a selected-date sessions response succeeds:
+
+- sum the actual sessions in the venue groups
+- display a selected-date count in the subtitle
+- use grammatically correct singular/plural wording
+
+The conceptual meaning is `N sessions on <selected date>`. The formatted date may use the project's normal locale-safe date presentation.
+
+If no date is selected, use the no-upcoming-sessions empty state instead of an invented aggregate count.
+
+The response-derived count is presentation only and does not become durable state.
+
+### E. Genre placement
+
+The Assignment requires genre on Movie Detail, but the audited base Figma frame does not show a dedicated genre field.
+
+Add `GENRES` to the Movie Detail Details sidebar. Render API `movie.genres[].name` values using the existing Details label/value typography. Join names for presentation only; do not hardcode genre names.
+
+Do not move/remove verified Figma hero metadata merely to make room.
+
+This is an intentional Assignment-over-Figma addition and must be reported as such in visual QA.
+
+### F. Sold-out Movie Detail session control
+
+The base Movie Detail Figma ticket component has no verified disabled variant. The Assignment still requires sold-out sessions to remain visible and disabled.
+
+Therefore:
+
+- preserve the verified 207×81 Movie Detail ticket geometry
+- use a real disabled button
+- replace availability text with `Sold out`
+- use a conservative existing design-system disabled treatment such as reduced opacity while preserving legibility
+- do not copy Sessions-page geometry
+- do not claim the fallback disabled appearance is Figma-defined
+
+`session.isSoldOut` remains authoritative. Do not derive sold-out status from `seatsLeft`.
+
+### G. Age restriction presentation
+
+For authenticated users, use API-provided `user.age` and compare it against `movie.ageRating.minAge`. Never calculate replacement age from date of birth.
+
+If the authenticated user is below the minimum age:
+
+- Movie Detail session booking controls are disabled
+- show the Assignment-required age-denial message near the Sessions/action area
+- wording follows the movie's actual rating code, for example: `This film is rated 18+. You cannot buy tickets for it with this account.`
+- the message must remain perceivable independently of disabled controls
+- session controls should be accessibly associated with the restriction message where practical
+
+Do not treat a nullable age on an incomplete profile as age zero. Profile completeness is handled by the protected-action rule below.
+
+### H. Profile completion before booking replay
+
+A booking action is a protected action. The bounded pending descriptor is conceptually:
+
+```js
+{
+  type: "OPEN_BOOKING",
+  payload: {
+    sessionId
+  }
+}
+```
+
+Do not persist full Movie or Session objects as the pending action.
+
+For a guest:
+
+1. store the bounded session action
+2. authenticate
+3. if the returned user has `profileComplete === false`, require profile completion
+4. only after a complete profile is confirmed from the API, replay the booking action once
+5. clear pending state appropriately
+
+For an already-authenticated user with incomplete profile:
+
+- preserve the same booking action
+- require profile completion before opening Seat Selection
+- replay once after the API confirms `profileComplete`
+
+The user must not have to click the original session twice. Do not open Seat Selection first and postpone profile completion until hold creation.
+
+This project chooses profile completion **before booking-flow entry** for protected booking actions. This is stricter in UX than the backend's hold-time enforcement but remains compatible with the Assignment and API.
+
+Use server-returned `profileComplete`; do not force it locally.
+
+### I. Compact language / format labels
+
+Movie Detail ticket controls must use API-provided `format.name` and `language.name`.
+
+Do not invent abbreviations from IDs, slugs, or language codes. Do not use undocumented `language.code` as the primary UI value.
+
+Preserve full authoritative values in the accessible name.
+
+Within the fixed 207×81 Figma geometry:
+
+- first try the verified typography/layout
+- if an unusually long authoritative value cannot fit safely, visual truncation/ellipsis is allowed as a presentation fallback
+- the full value must remain available to assistive technology
+- do not silently substitute another label
+
+Do not reduce core typography arbitrarily merely to force text to fit.
+
+### J. Movie Detail → booking integration boundary
+
+Movie Detail session activation ultimately opens the shared Seat Selection overlay. Booking is not a route. Do not invent `/booking` or `/sessions/:id/book`.
+
+The durable integration identifier is `sessionId`. The later shared booking entry should conceptually consume `openBooking(sessionId)`.
+
+The Movie Detail implementation pass may create a clean callback/integration seam for this action. Seat Selection itself remains the next implementation phase.
+
+Until a real booking consumer exists:
+
+- do not create fake modal content
+- do not navigate to Movie Detail again
+- do not simulate booking success
+- do not claim booking integration is complete
+
+Any temporarily unconnected session activation must be explicitly reported as a known deferred integration in the Movie Detail checkpoint, exactly as the existing Sessions-page booking boundary was reported.
+
+The next Seat Selection/Booking checkpoint must replace that deferred boundary with real behavior.
+
+### K. Coming Soon direct detail
+
+A direct `/movies/:slug` navigation to a Coming Soon movie may render its Movie Detail metadata.
+
+If `isComingSoon === true` and/or `availableDates` is empty:
+
+- no booking date/session action is enabled
+- do not enter Seat Selection
+- render the Sessions area as a no-upcoming-sessions / unavailable-for-booking state
+
+Do not invent Movie Detail notification behavior in this scope. `Notify Me` remains a separate feature unless a later scoped implementation verifies and wires the relevant API/Figma behavior. Do not invent notification persistence.
+
+### L. Movie Detail session grouping
+
+`GET /movies/{movie}/sessions?date=...` returns venue groups.
+
+Inside each venue:
+
+- group sessions by `session.hall.id` for presentation
+- preserve server session order unless a confirmed source says otherwise
+- use `hall.name`
+- do not invent a nested halls API shape
+- do not flatten all venue/hall meaning away
+
+Use `session.time` for displayed showtime, `session.price` directly, `session.format.name`, `session.language.name`, `session.seatsLeft`, and `session.isSoldOut`.
+
+Do not add format uplift again.
+
+### M. Local state / async policy
+
+Movie Detail owns selected date locally. Do not copy Sessions URL-query architecture into Movie Detail.
+
+Reads for `GET /movies/{slug}` and `GET /movies/{slug}/sessions?date=...` must use:
+
+- AbortController where practical
+- explicit current-request protection where needed
+- silent abort handling
+- retry against current slug/date
+- no stale response overwrite
+
+Changing date must not erase the already loaded movie metadata.
+
+### N. Recently Viewed writer boundary
+
+Preserve accepted D-014. After Movie Detail loads successfully:
+
+- for an authenticated user, record only the movie slug in the user-scoped Recently Viewed storage
+- failed/404 loads are not recorded
+- repeated view moves the slug to the most-recent position
+- no Movie object is persisted
+
+The Home Recently Viewed consumer remains a separate missing integration unless deliberately scoped later. Do not expand the Movie Detail implementation into a Home redesign.
+
+### Reason
+
+Resolve the audited Movie Detail policy gaps before implementation while preserving API authority, Assignment requirements, verified Figma presentation, and explicit fallback/deferred integration boundaries.
+
+### Affected
+
+- Movie Detail presentation, local date selection, session reads, and visual/accessibility QA
+- later shared protected booking entry and profile-completion replay
+- Movie Detail Recently Viewed writer
+- Buy-ticket navigation references in `docs/03_FIGMA_REFERENCE.md`
+
+This decision does not implement Movie Detail or the later booking flow, and does not expand scope into Profile UI, Home Recently Viewed rendering, or Notify Me.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:

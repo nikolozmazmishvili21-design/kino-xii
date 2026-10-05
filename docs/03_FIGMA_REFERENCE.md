@@ -71,18 +71,35 @@ Use these two frames to verify:
 
 ### Buy ticket — section `284:15451`
 
-Eight top-level movie-detail / booking-flow frames:
+The following frame mapping was verified on 2026-10-05 in the editable implementation-inspection file `Zeb7RQ8mjGp04YIPde2ud2`, using the second/GTU connection. All eight frames are named `Movie inside page`; their visible contents determine the states below.
 
-- `148:3565` — `Movie inside page` — 1728×1374
-- `291:20628` — `Movie inside page` — 1728×1027
-- `408:8079` — `Movie inside page` — 1728×1027
-- `408:8520` — `Movie inside page` — 1728×1027
-- `291:21072` — `Movie inside page` — 1728×1027
-- `291:21718` — `Movie inside page` — 1728×1027
-- `291:22284` — `Movie inside page` — 1728×1027
-- `291:22766` — `Movie inside page` — 1728×1027
+| Frame ID | Visible state | Size | Implementation phase |
+| --- | --- | --- | --- |
+| `148:3565` | Base/full Movie Detail | 1728×1374 | Current Movie Detail scope |
+| `291:20628` | Empty Seat Selection | 1728×1027 | Later Seat Selection |
+| `408:8079` | Alternate empty Seat Selection composition | 1728×1027 | Later Seat Selection |
+| `408:8520` | Alternate/duplicate empty Seat Selection composition | 1728×1027 | Later Seat Selection |
+| `291:21072` | Selected-seat state | 1728×1027 | Later Seat Selection |
+| `291:21718` | Checkout empty | 1728×1027 | Later Checkout |
+| `291:22284` | Checkout filled | 1728×1027 | Later Checkout |
+| `291:22766` | Confirmation | 1728×1027 | Later Confirmation |
 
-These frames cover movie details and booking-related states. Exact mapping of each frame to interaction state should be checked in Figma when implementing that feature.
+Key base Movie Detail nodes:
+
+- Navbar — `302:23560`
+- Banner — `148:3877`
+- Poster — `148:4126`
+- Hero content — `148:4158`
+- Sessions column — `148:3931`
+- Date row — `148:3936`
+- Venue group — `148:3943`
+- Hall card row — `148:3946`
+- Movie Detail ticket instance — `148:3952`; Default component — `119:3759`
+- Details sidebar — `148:3970`
+- Rating note — `148:3992`
+- Footer — `148:3593`
+
+Accepted Movie Detail presentation and pre-booking policies are recorded in D-023 in `docs/06_DECISIONS.md`. Its fallback treatments and Assignment-over-Figma additions are not additional Figma-defined states. Inspect exact live nodes again during implementation; the provenance/editable-copy divergence rule below still applies.
 
 ### My Profile — section `284:13297`
 
