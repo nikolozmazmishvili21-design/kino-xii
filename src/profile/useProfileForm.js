@@ -29,6 +29,14 @@ export default function useProfileForm(venues, formRef) {
       setState({ ...state, user, baseline: profileDraft(user), pending: false,
         reauthUserId: null, serverErrors: {},
         feedback: { type: "success", message: "Session restored. Review your changes and save again." } });
+    } else if (user && state.user?.id === user.id) {
+      const next = initialState(user);
+      // A guarded same-account server refresh updates pristine fields and the
+      // saved baseline. Preserve only genuine unsaved edits, never another account.
+      next.draft = Object.fromEntries(Object.entries(next.draft).map(([field, value]) =>
+        [field, state.draft[field] !== state.baseline[field] ? state.draft[field] : value]));
+      next.touched = state.touched;
+      setState(next);
     } else {
       setState(initialState(user));
     }

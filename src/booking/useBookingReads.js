@@ -3,6 +3,15 @@ import { getSession, getSessionSeats } from "../api/sessionsApi.js";
 import { ApiError } from "../api/client.js";
 import { isSeatMap } from "./seatSelection.js";
 
+export async function readBookingData(kind, sessionId, { signal } = {}, apis = { getSession, getSessionSeats }) {
+  const api = kind === "sessionRead" ? apis.getSession : apis.getSessionSeats;
+  const data = await api(sessionId, { signal });
+  if (kind === "sessionRead" ? data?.id !== sessionId : !isSeatMap(data, sessionId)) {
+    throw new ApiError(kind === "sessionRead" ? "Booking details are incomplete. Try again." : "Seat map is unavailable. Try again.");
+  }
+  return data;
+}
+
 export default function useBookingReads({ state, scope, dispatch, isCurrentUser, onExpire }) {
   const read = useCallback((kind) => {
     const request = scope.start(kind);
@@ -11,12 +20,8 @@ export default function useBookingReads({ state, scope, dispatch, isCurrentUser,
     const { sessionId, instanceId, attempt, controller } = request;
     const identity = { kind, sessionId, instanceId, attempt };
     dispatch({ type: "READ_START", ...identity });
-    const api = kind === "sessionRead" ? getSession : getSessionSeats;
-    api(sessionId, { signal: controller.signal }).then((data) => {
+    readBookingData(kind, sessionId, { signal: controller.signal }).then((data) => {
       if (!scope.isCurrent(request, isCurrentUser)) return;
-      if (kind === "sessionRead" ? data?.id !== sessionId : !isSeatMap(data, sessionId)) {
-        throw new ApiError(kind === "sessionRead" ? "Booking details are incomplete. Try again." : "Seat map is unavailable. Try again.");
-      }
       dispatch({ type: "READ_SUCCESS", ...identity, data });
     }).catch((error) => {
       if (error?.name === "AbortError" || !scope.isCurrent(request, isCurrentUser)) return;

@@ -1,9 +1,9 @@
 import { useId } from "react";
 
-export default function TicketTypeSelect({ seat, types, selectedSlug, onChange }) {
+export default function TicketTypeSelect({ seat, types, selectedSlug, onChange, disabled = false, error }) {
   const id = useId();
   return (
-    <fieldset className="seat-ticket-types">
+    <fieldset className="seat-ticket-types" disabled={disabled} aria-describedby={error ? `${id}-error` : undefined} aria-invalid={error ? true : undefined}>
       <legend className="visually-hidden">Ticket type for seat {seat.code}</legend>
       {types.map((type) => (
         <label className={`seat-ticket-types__option${selectedSlug === type.slug ? " seat-ticket-types__option--selected" : ""}`} key={type.id}>
@@ -11,6 +11,7 @@ export default function TicketTypeSelect({ seat, types, selectedSlug, onChange }
           <span>{type.name} {Number((type.priceRatio * 100).toFixed(2))}%</span>
         </label>
       ))}
+      {error && <p className="seat-ticket-types__error" id={`${id}-error`}>{error}</p>}
     </fieldset>
   );
 }

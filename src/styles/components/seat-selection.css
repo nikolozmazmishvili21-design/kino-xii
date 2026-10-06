@@ -10,6 +10,11 @@
 .seat-selection::backdrop { background: rgba(16, 16, 16, 0.3); }
 .seat-selection__content { width: 1082px; min-height: 535px; display: flex; flex-direction: column; gap: 32px; }
 .seat-selection__header { display: flex; justify-content: space-between; gap: 24px; min-height: 46px; }
+.seat-selection__header-actions { position: relative; flex-shrink: 0; }
+.seat-selection__header-actions:has(.hold-timer) .seat-selection__close { position: absolute; right: 0; top: -28px; }
+.hold-timer { width: 102px; height: 46px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 8px 14px; border-radius: 12px; background: #1e2031; }
+.hold-timer span { font-size: 12px; font-weight: 600; line-height: 13px; color: #a9a9a9; white-space: nowrap; }
+.hold-timer strong { font-size: 14px; font-weight: 800; line-height: 15px; color: #fff; }
 .seat-selection__header h2 { margin: 0 0 8px; font-size: 20px; font-weight: 800; line-height: 22px; text-transform: uppercase; }
 .seat-selection__metadata { margin: 0; color: var(--color-muted); font-size: 12px; line-height: 1.3; }
 .seat-selection__close { width: 24px; height: 24px; flex: 0 0 24px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
@@ -23,6 +28,12 @@
 .seat-selection__map-state { flex: 1 0 408px; min-height: min-content; display: flex; flex-direction: column; justify-content: center; gap: 32px; }
 .seat-selection__map-state > p { margin: 0; }
 .seat-selection__error p { margin: 0 0 12px; line-height: 1.3; }
+.seat-selection__error { display: flex; flex-wrap: wrap; gap: 12px; }
+.seat-selection__error p { flex-basis: 100%; }
+.seat-selection__checkout-content { display: flex; flex: 1; align-items: flex-end; padding-top: 24px; }
+.seat-summary__card--held p { margin: 0; font-size: 12px; color: var(--color-muted); }
+.seat-ticket-types__error { flex-basis: 100%; margin: 0; color: var(--color-accent); font-size: 12px; }
+.seat-ticket-types:disabled label, .seat-summary__remove:disabled { cursor: default; }
 .seat-selection__feedback { flex-shrink: 0; min-height: 16px; margin: 0; color: var(--color-muted); line-height: 16px; }
 
 .seat-map__screen { flex-shrink: 0; width: 680px; height: 30px; margin-inline: 20px; display: flex; align-items: center; justify-content: center; border-radius: 0 0 20px 20px; background: var(--color-raised); font-size: 12px; font-weight: 600; }

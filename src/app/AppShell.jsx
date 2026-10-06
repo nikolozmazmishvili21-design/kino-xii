@@ -23,6 +23,11 @@ export default function AppShell() {
   const continuationRef = useRef(null);
   const openerRef = useRef(null);
   const profileHandoff = useRef(null);
+  const bookingLifecycle = useRef(null);
+  const registerBookingLifecycle = useCallback((handler) => {
+    bookingLifecycle.current = handler;
+    return () => { if (bookingLifecycle.current === handler) bookingLifecycle.current = null; };
+  }, []);
   const visibleAuthMode = authMode !== "closed" ? authMode
     : status === "guest" && (pendingAction || profileContinuation) ? "login" : "closed";
 
@@ -57,6 +62,7 @@ export default function AppShell() {
   // Success closes auth without cancelling intent; only the coordinator replays.
   const finishAuth = useCallback(() => setAuthMode("closed"), []);
   const cancelAuth = useCallback(() => {
+    bookingLifecycle.current?.cancelContinuation();
     const isProfileAccess = Boolean(continuationRef.current);
     finishProfileAccess();
     clearProtectedAction();
@@ -67,6 +73,7 @@ export default function AppShell() {
   const openBooking = useCallback((sessionId) => {
     const action = createBookingAction(sessionId);
     if (!action) return false;
+    bookingLifecycle.current?.newIntent(sessionId);
     const opener = document.activeElement;
     if (opener && !opener.closest("dialog")) openerRef.current = opener;
     return setPendingAction(action, { newIntent: true });
@@ -95,7 +102,8 @@ export default function AppShell() {
     consumeBookingReady,
     reauthenticateBooking,
     openerRef,
-  }), [openBooking, bookingReadyAction, consumeBookingReady, reauthenticateBooking]);
+    registerBookingLifecycle,
+  }), [openBooking, bookingReadyAction, consumeBookingReady, reauthenticateBooking, registerBookingLifecycle]);
 
   function openAuth(mode, opener) {
     openerRef.current = opener;

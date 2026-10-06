@@ -3,12 +3,12 @@ import { rowSlots, seatPresentation } from "../../booking/seatSelection.js";
 import heldStripes from "../../assets/icons/seat-held-stripes.svg";
 import heldLegend from "../../assets/icons/seat-held-legend.svg";
 
-function SeatButton({ seat, section, row, selected, blocked, onToggle }) {
-  const presentation = seatPresentation(seat, selected);
+function SeatButton({ seat, section, row, selected, blocked, onToggle, verifiedIds, contested }) {
+  const presentation = seatPresentation(seat, selected, verifiedIds.includes(seat.id), contested.includes(seat.code));
   return (
     <button type="button" className={`seat-map__seat seat-map__seat--${presentation.kind}`}
       id={`booking-seat-${seat.id}`}
-      disabled={presentation.disabled} aria-disabled={blocked && !presentation.disabled ? true : undefined}
+      disabled={presentation.disabled || blocked}
       aria-pressed={selected} aria-describedby={blocked ? "booking-selection-status" : undefined}
       aria-label={`${section.name}, row ${row.label}, seat ${seat.code}, ${presentation.description}`}
       onClick={() => { if (!blocked) onToggle(seat.id); }}>
@@ -18,7 +18,7 @@ function SeatButton({ seat, section, row, selected, blocked, onToggle }) {
   );
 }
 
-export default function SeatMap({ map, selection, blocked, onToggle }) {
+export default function SeatMap({ map, selection, blocked, onToggle, verifiedIds = [], contested = [] }) {
   return (
     <>
       <div className="seat-map__screen">SCREEN</div>
@@ -36,7 +36,7 @@ export default function SeatMap({ map, selection, blocked, onToggle }) {
                         {slot.kind === "aisle" ? <span className="seat-map__aisle" aria-hidden="true" />
                           : slot.kind === "gap" ? <span className="seat-map__gap" aria-hidden="true" />
                             : <SeatButton seat={slot.seat} section={section} row={row} selected={Boolean(selection[slot.seat.id])}
-                              blocked={blocked} onToggle={onToggle} />}
+                              blocked={blocked} onToggle={onToggle} verifiedIds={verifiedIds} contested={contested} />}
                       </Fragment>
                     ))}
                   </div>

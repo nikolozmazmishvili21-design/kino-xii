@@ -7,9 +7,11 @@ import Footer from "../components/Footer.jsx";
 import completeIcon from "../assets/icons/profile-complete.svg";
 import useProfileForm from "../profile/useProfileForm.js";
 import { profileEligibility } from "../profile/profileForm.js";
+import { useBooking } from "../booking/BookingContext.js";
 
 export default function ProfilePage() {
   const { status, mutation } = useAuth();
+  const { profileRemediationMessage } = useBooking();
   const { continuation, requestProfileAccess, finishProfileAccess } = useProfileAccess();
   const { filterOptions } = useAppBootstrap();
   const venues = filterOptions?.venues ?? [];
@@ -41,6 +43,7 @@ export default function ProfilePage() {
           <div className={`profile-page__banner${complete ? " profile-page__banner--complete" : ""}`}>
             <p className="profile-page__status">{complete && <img src={completeIcon} alt="" aria-hidden="true" />}{complete ? "Profile Complete" : "Profile incomplete"}</p>
             {!complete && <p>Please complete your profile to enable booking.</p>}
+            {!complete && profileRemediationMessage && <p role="alert">{profileRemediationMessage}</p>}
             {eligibility && <p>{eligibility}</p>}
           </div>
           <form className="profile-form" ref={formRef} onSubmit={form.submit} noValidate aria-label="Personal Information" aria-busy={form.pending}>

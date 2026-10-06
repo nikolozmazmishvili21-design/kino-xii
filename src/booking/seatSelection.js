@@ -34,10 +34,12 @@ export function selectionConfiguration(options, session) {
   return { ready: true, adult, types, max: options.maxSeatsPerOrder };
 }
 
-export function seatPresentation(seat, locallySelected = false) {
+export function seatPresentation(seat, locallySelected = false, verifiedOwn = false, contested = false) {
   if (seat.state === "unavailable") return { kind: "gap", disabled: true, description: "unavailable" };
-  if (seat.isMine) return { kind: "own", disabled: true, description: "own held seat; unavailable for editing in this booking" };
+  if (contested) return { kind: "sold", disabled: true, description: "contested; waiting for seat map refresh" };
+  if (seat.isMine && !verifiedOwn) return { kind: "own", disabled: true, description: "own held seat; unavailable for editing in this booking" };
   if (seat.state === "sold") return { kind: "sold", disabled: true, description: "sold" };
+  if (seat.isMine && verifiedOwn) return { kind: locallySelected ? "selected" : "own", disabled: false, description: "held in this booking" };
   if (seat.state === "held") return { kind: "held", disabled: true, description: "held by another user" };
   return { kind: locallySelected ? "selected" : "available", disabled: false,
     description: locallySelected ? "selected locally" : "available" };
@@ -97,15 +99,16 @@ export function previewCents(price, ratio) {
   return Number.isSafeInteger(cents) ? cents : null;
 }
 
-export function selectedSeatPreviews(selection, map, session, options) {
+export function selectedSeatPreviews(selection, map, session, options, hold = null) {
   const config = selectionConfiguration(options, session);
   if (!config.ready) return [];
   return Object.entries(selection).flatMap(([id, assignment]) => {
     const seat = findSeat(map, id);
     const type = config.types.find((candidate) => candidate.slug === assignment.ticketTypeSlug);
-    if (!seat || seat.state !== "available" || seat.isMine || !type) return [];
-    const cents = previewCents(session.price, type.priceRatio);
-    return cents === null ? [] : [{ seat, type, cents }];
+    const held = hold?.seats.find((entry) => entry.seatId === Number(id));
+    if (!seat || ["sold", "unavailable"].includes(seat.state) || (seat.isMine ? !held : seat.state !== "available") || !type) return [];
+    const cents = held?.ticketType.slug === type.slug ? held.price * 100 : previewCents(session.price, type.priceRatio);
+    return cents === null ? [] : [{ seat, type: held?.ticketType.slug === type.slug ? { ...type, name: held.ticketType.name } : type, cents }];
   });
 }
 

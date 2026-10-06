@@ -18,6 +18,11 @@ export default function AuthProvider({ children }) {
   const mutation = useRef(null);
   const revision = useRef(0);
   const currentUser = useRef(null);
+  const bookingLogout = useRef(null);
+  const registerBookingLogout = useCallback((handler) => {
+    bookingLogout.current = handler;
+    return () => { if (bookingLogout.current === handler) bookingLogout.current = null; };
+  }, []);
   const protectedActions = useRef(EMPTY_ACTION_STATE);
   const [actionState, setActionState] = useState(EMPTY_ACTION_STATE);
 
@@ -70,7 +75,7 @@ export default function AuthProvider({ children }) {
       || typeof nextUser.profileComplete !== "boolean") return false;
 
     revision.current += 1;
-    restoration.current = Promise.resolve(nextUser);
+    restoration.current = null;
     currentUser.current = nextUser;
     setAuthState((current) => current.status === "authenticated" && current.user === authState.user
       ? { ...current, user: nextUser }
@@ -89,7 +94,7 @@ export default function AuthProvider({ children }) {
     const descriptor = normalizePendingAction(action);
     if (!descriptor || mutation.current) return false;
     revision.current += 1;
-    restoration.current = Promise.resolve(null);
+    restoration.current = null;
     currentUser.current = null;
     clearToken();
     setAuthState({ ...INITIAL_STATE, status: "guest" });
@@ -100,12 +105,13 @@ export default function AuthProvider({ children }) {
   const isCurrentUser = useCallback((expectedUser) => {
     return Boolean(expectedUser && currentUser.current === expectedUser && !mutation.current);
   }, []);
+  const getCurrentUser = useCallback(() => mutation.current ? null : currentUser.current, []);
 
   // Profile expiry needs no invented booking intent and cannot clear newer auth.
   const expireProfileSession = useCallback((expectedUser) => {
     if (!isCurrentUser(expectedUser)) return false;
     revision.current += 1;
-    restoration.current = Promise.resolve(null);
+    restoration.current = null;
     currentUser.current = null;
     clearToken();
     setAuthState({ ...INITIAL_STATE, status: "guest" });
@@ -120,15 +126,14 @@ export default function AuthProvider({ children }) {
   const restoreSession = useCallback(() => {
     if (mutation.current) {
       // Boot waits for an active auth action instead of starting an older read.
-      return mutation.current.promise.then(() => null, () => null);
+      return mutation.current.promise.then(() => currentUser.current, () => null);
     }
 
-    if (restoration.current) {
-      return restoration.current;
+    if (restoration.current?.revision === revision.current) {
+      return restoration.current.promise;
     }
 
     const requestRevision = revision.current;
-    let retryable = false;
 
     const promise = Promise.resolve()
       .then(async () => {
@@ -148,13 +153,16 @@ export default function AuthProvider({ children }) {
         }
 
         if (revision.current === requestRevision) {
-          setAuthState({ ...INITIAL_STATE, status: "restoring" });
+          // A fresh read must not erase the current account's editable draft.
+          setAuthState((current) => current.user
+            ? { ...current, error: null }
+            : { ...INITIAL_STATE, status: "restoring" });
         }
 
         const response = await authApi.me({ token });
 
         if (revision.current !== requestRevision) {
-          return null;
+          return mutation.current?.promise.then(() => currentUser.current, () => null) ?? currentUser.current;
         }
 
         currentUser.current = response.data;
@@ -177,7 +185,6 @@ export default function AuthProvider({ children }) {
           setAuthState({ ...INITIAL_STATE, status: "guest" });
         } else {
           // A transient failure does not prove that the saved token is stale.
-          retryable = true;
           setAuthState((current) => ({ ...current, error }));
           throw error;
         }
@@ -185,12 +192,13 @@ export default function AuthProvider({ children }) {
         return null;
       })
       .finally(() => {
-        if (retryable && restoration.current === promise) {
+        // Deduplicate only in-flight reads; a User snapshot is not a fresh /me.
+        if (restoration.current?.promise === promise) {
           restoration.current = null;
         }
       });
 
-    restoration.current = promise;
+    restoration.current = { promise, revision: requestRevision };
     return promise;
   }, []);
 
@@ -207,6 +215,8 @@ export default function AuthProvider({ children }) {
 
     // Invalidate any restoration response before starting a newer auth action.
     if (type === "logout") {
+      // Booking captures and initiates cleanup while this auth context is usable.
+      bookingLogout.current?.();
       currentUser.current = null;
       clearProtectedAction();
     }
@@ -235,7 +245,6 @@ export default function AuthProvider({ children }) {
 
         setToken(token);
         currentUser.current = user;
-        restoration.current = Promise.resolve(user);
         setAuthState((current) => ({
           ...current,
           status: "authenticated",
@@ -252,7 +261,7 @@ export default function AuthProvider({ children }) {
       .finally(() => {
         if (type === "logout") {
           clearToken();
-          restoration.current = Promise.resolve(null);
+          restoration.current = null;
         }
 
         mutation.current = null;
@@ -296,10 +305,12 @@ export default function AuthProvider({ children }) {
       expireSession,
       expireProfileSession,
       isCurrentUser,
+      getCurrentUser,
+      registerBookingLogout,
     }),
     [authState, actionState, login, register, logout, restoreSession,
       setPendingAction, clearProtectedAction, markBookingReady, consumeBookingReady,
-      replaceUser, expireSession, expireProfileSession, isCurrentUser],
+      replaceUser, expireSession, expireProfileSession, isCurrentUser, getCurrentUser, registerBookingLogout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

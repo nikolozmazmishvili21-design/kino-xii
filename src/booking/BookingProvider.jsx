@@ -1,59 +1,54 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useAuth } from "../auth/AuthContext.js";
 import { useBookingEntry } from "../auth/BookingEntryContext.js";
+import { createBookingAction } from "../auth/pendingAction.js";
 import { useAppBootstrap } from "../app/AppBootstrapContext.js";
 import { BookingContext } from "./BookingContext.js";
-import { bookingReducer, initialBookingState, createBookingReadScope, consumeReadyBooking, expireBookingRead } from "./bookingReducer.js";
-import useBookingReads from "./useBookingReads.js";
+import { createBookingRuntime } from "./bookingRuntime.js";
 import { selectionConfiguration } from "./seatSelection.js";
 import SeatSelectionModal from "../components/booking/SeatSelectionModal.jsx";
 
 export default function BookingProvider({ children, authClosed }) {
-  const { status, user, mutation, isCurrentUser } = useAuth();
-  const { bookingReadyAction, consumeBookingReady, reauthenticateBooking, openerRef } = useBookingEntry();
+  const { status, user, mutation, isCurrentUser, getCurrentUser, replaceUser, setPendingAction, registerBookingLogout } = useAuth();
+  const { bookingReadyAction, consumeBookingReady, reauthenticateBooking, openerRef, registerBookingLifecycle } = useBookingEntry();
   const { filterOptions } = useAppBootstrap();
-  const [state, dispatch] = useReducer(bookingReducer, undefined, initialBookingState);
-  const [scope] = useState(createBookingReadScope);
   const bookingOpener = useRef(null);
+  const [runtime] = useState(() => createBookingRuntime({
+    isCurrentUser, getUser: getCurrentUser, replaceUser, options: () => filterOptions, reauthenticate: reauthenticateBooking,
+    profileRequired: (freshUser, sessionId) => {
+      if (isCurrentUser(freshUser)) setPendingAction(createBookingAction(sessionId));
+    },
+  }));
+  const state = useSyncExternalStore(runtime.subscribe, runtime.state);
 
-  const close = useCallback(() => {
-    const active = scope.active();
-    scope.close();
-    if (active) dispatch({ type: "CLOSE", instanceId: active.instanceId });
-  }, [scope]);
-
-  const onExpire = useCallback((request) => {
-    // expireSession does not itself guard the expected user. Check it before handoff.
-    expireBookingRead(scope, request, isCurrentUser, close, reauthenticateBooking);
-  }, [scope, isCurrentUser, close, reauthenticateBooking]);
-
-  const retry = useBookingReads({ state, scope, dispatch, isCurrentUser, onExpire });
-
+  useEffect(() => registerBookingLogout(runtime.close), [registerBookingLogout, runtime]);
+  useEffect(() => registerBookingLifecycle(runtime), [registerBookingLifecycle, runtime]);
   useEffect(() => {
-    if (status !== "authenticated" || mutation || user?.profileComplete !== true || !authClosed) {
-      close();
-      return;
-    }
-    if (scope.active() && !isCurrentUser(scope.active().expectedUser)) close();
-    consumeReadyBooking(bookingReadyAction, consumeBookingReady, (sessionId) => {
-      bookingOpener.current = openerRef.current;
-      const active = scope.open(sessionId, user, bookingOpener.current);
-      dispatch({ type: "OPEN", sessionId, instanceId: active.instanceId });
-    });
-  }, [status, mutation, user, authClosed, bookingReadyAction, consumeBookingReady, openerRef, scope, close, isCurrentUser]);
-
-  useEffect(() => () => scope.abortReads(), [scope]);
+    runtime.configureDependencies({ options: () => filterOptions, replaceUser, profileRequired: (freshUser, sessionId) => {
+      if (isCurrentUser(freshUser)) setPendingAction(createBookingAction(sessionId));
+    } });
+  }, [runtime, filterOptions, replaceUser, isCurrentUser, setPendingAction]);
   useEffect(() => {
-    dispatch({ type: "CONFIG_CHANGED", instanceId: state.instanceId, options: filterOptions });
-  }, [filterOptions, state.instanceId]);
+    const allowed = status === "authenticated" && !mutation && user?.profileComplete === true && authClosed;
+    runtime.syncAuth(user, allowed);
+    if (!allowed || !bookingReadyAction) return;
+    const action = consumeBookingReady(bookingReadyAction);
+    if (!action) return;
+    bookingOpener.current = openerRef.current;
+    void runtime.enter(action.payload.sessionId, user, bookingOpener.current);
+  }, [runtime, status, mutation, user, authClosed, bookingReadyAction, consumeBookingReady, openerRef]);
 
   const value = useMemo(() => ({
-    state, filterOptions, close, retry, openerRef: bookingOpener,
+    state, filterOptions, openerRef: bookingOpener,
     config: selectionConfiguration(filterOptions, state.sessionRead.data),
-    toggleSeat: (seatId) => dispatch({ type: "TOGGLE_SEAT", instanceId: state.instanceId, seatId, options: filterOptions }),
-    removeSeat: (seatId) => dispatch({ type: "REMOVE_SEAT", instanceId: state.instanceId, seatId }),
-    setTicket: (seatId, slug) => dispatch({ type: "SET_TICKET", instanceId: state.instanceId, seatId, slug, options: filterOptions }),
-  }), [state, filterOptions, close, retry]);
+    close: runtime.close, retry: runtime.retry, next: runtime.submit, back: runtime.back,
+    startOver: runtime.startOver, expire: runtime.expire, canNext: runtime.canNext(),
+    changed: runtime.isChanged(), unknownOwn: runtime.hasUnknownOwn(), verifiedIds: runtime.verifiedIds(),
+    profileRemediationMessage: runtime.profileMessage(user?.id),
+    toggleSeat: (seatId) => runtime.edit("TOGGLE_SEAT", { seatId }),
+    removeSeat: (seatId) => runtime.edit("REMOVE_SEAT", { seatId }),
+    setTicket: (seatId, slug) => runtime.edit("SET_TICKET", { seatId, slug }),
+  }), [state, filterOptions, runtime, user]);
 
   const visible = state.sessionId !== null && status === "authenticated" && !mutation
     && user?.profileComplete === true && authClosed;

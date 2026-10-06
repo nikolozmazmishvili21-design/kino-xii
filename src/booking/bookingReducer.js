@@ -2,7 +2,8 @@ import { findSeat, hasPreviewContext, selectionConfiguration } from "./seatSelec
 
 const emptyRead = () => ({ status: "idle", data: null, error: null, attempt: 0 });
 export function initialBookingState() {
-  return { sessionId: null, instanceId: 0, sessionRead: emptyRead(), seatMapRead: emptyRead(), selection: {}, feedback: null };
+  return { sessionId: null, instanceId: 0, sessionRead: emptyRead(), seatMapRead: emptyRead(), selection: {}, feedback: null,
+    step: "seats", hold: { phase: "idle", data: null }, selectionRevision: 0, contested: [], fieldErrors: {}, recovery: null, releaseWarning: null, startedOver: false };
 }
 
 export function bookingReducer(state, action) {
@@ -10,43 +11,50 @@ export function bookingReducer(state, action) {
     sessionRead: { ...emptyRead(), status: "loading" }, seatMapRead: { ...emptyRead(), status: "loading" } };
   if (action.instanceId !== state.instanceId || state.sessionId === null) return state;
   if (action.type === "CLOSE") return initialBookingState();
+  // The provider-owned coordinator guards operation identity before these transitions.
+  if (action.type === "HOLD_TRANSITION") return { ...state, ...action.patch };
   if (action.type === "READ_START") {
     const key = action.kind;
     if (action.sessionId !== state.sessionId || action.attempt <= state[key].attempt) return state;
-    return { ...state, [key]: { status: "loading", data: null, error: null, attempt: action.attempt }, selection: {}, feedback: null };
+    return { ...state, [key]: { status: "loading", data: action.preserve ? state[key].data : null, error: null, attempt: action.attempt },
+      ...(action.preserve ? {} : { selection: {}, feedback: null, selectionRevision: state.selectionRevision + 1 }) };
   }
   if (action.type === "READ_SUCCESS" || action.type === "READ_ERROR") {
     const key = action.kind;
     if (action.sessionId !== state.sessionId || action.attempt !== state[key].attempt) return state;
-    if (action.type === "READ_ERROR") return { ...state, [key]: { ...state[key], status: "error", error: action.error }, selection: {}, feedback: null };
+    if (action.type === "READ_ERROR") return { ...state, [key]: { ...state[key], status: "error", error: action.error },
+      ...(action.preserve ? {} : { selection: {}, feedback: null, selectionRevision: state.selectionRevision + 1 }) };
     return { ...state, [key]: { ...state[key], status: "ready", data: action.data, error: null },
       ...(key === "sessionRead" && !hasPreviewContext(action.data) ? { selection: {}, feedback: null } : {}) };
   }
   if (action.type === "CONFIG_CHANGED") {
     if (!selectionConfiguration(action.options, state.sessionRead.data).ready && Object.keys(state.selection).length) {
-      return { ...state, selection: {}, feedback: null };
+      return { ...state, selection: {}, feedback: null, selectionRevision: state.selectionRevision + 1 };
     }
     return state;
   }
+  if (["creating", "restoring", "releasing", "uncertain"].includes(state.hold.phase) || state.recovery) return state;
   if (action.type === "REMOVE_SEAT") {
     const selection = { ...state.selection };
     delete selection[action.seatId];
-    return { ...state, selection, feedback: null };
+    return { ...state, selection, feedback: null, fieldErrors: {}, selectionRevision: state.selectionRevision + 1 };
   }
   const config = selectionConfiguration(action.options, state.sessionRead.data);
   if (!config.ready || state.sessionRead.status !== "ready" || state.seatMapRead.status !== "ready") return state;
   if (action.type === "TOGGLE_SEAT") {
     const seat = findSeat(state.seatMapRead.data, action.seatId);
-    if (!seat || seat.state !== "available" || seat.isMine) return state;
+    const verifiedOwn = state.hold.data?.seats.some((held) => held.seatId === seat?.id);
+    if (!seat || state.contested.includes(seat.code) || ["sold", "unavailable"].includes(seat.state)
+      || (seat.isMine ? !verifiedOwn : seat.state !== "available")) return state;
     if (state.selection[seat.id]) return bookingReducer(state, { type: "REMOVE_SEAT", seatId: seat.id, instanceId: state.instanceId });
     if (Object.keys(state.selection).length >= config.max) {
       return { ...state, feedback: `You can select up to ${config.max} seats.` };
     }
-    return { ...state, selection: { ...state.selection, [seat.id]: { ticketTypeSlug: config.adult.slug } }, feedback: null };
+    return { ...state, selection: { ...state.selection, [seat.id]: { ticketTypeSlug: config.adult.slug } }, feedback: null, fieldErrors: {}, selectionRevision: state.selectionRevision + 1 };
   }
   if (action.type === "SET_TICKET" && state.selection[action.seatId]
     && config.types.some((type) => type.slug === action.slug)) {
-    return { ...state, selection: { ...state.selection, [action.seatId]: { ticketTypeSlug: action.slug } }, feedback: null };
+    return { ...state, selection: { ...state.selection, [action.seatId]: { ticketTypeSlug: action.slug } }, feedback: null, fieldErrors: {}, selectionRevision: state.selectionRevision + 1 };
   }
   return state;
 }
