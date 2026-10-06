@@ -2006,6 +2006,194 @@ This decision documents policy only. It implements no Profile, booking, or ticke
 
 ---
 
+## D-026 — Seat Selection runtime read, focus, and configuration-failure policy
+
+**Status:** Accepted
+**Date:** 2026-10-06
+
+### Decision
+
+Resolve the four runtime policies left open by the Seat Selection audit: authenticated optional-read 401 handling, initial focus, missing/invalid Adult ticket configuration, and missing movie age-rating context. This decision supplements D-024 only. It does not rewrite D-024 or change D-023 protected booking replay, D-025 Profile completion, or the accepted architecture.
+
+### A. Authenticated optional-read 401
+
+Seat Selection is entered only after the existing protected booking gate produces READY. An active CHECKPOINT B booking instance therefore expects an authenticated user even though `GET /sessions/{session}/seats` is public/auth-optional.
+
+The seat-map endpoint does not document 401. The following is a Kino XII defensive runtime policy for a stale/revoked authenticated session, not an added OpenAPI contract.
+
+For a current authenticated booking session-context or seat-map read returning 401:
+
+1. Verify the active booking instance identity, request-attempt identity, and that the expected authenticated user is still the current user.
+2. If any guard is stale, ignore the 401 completely. It must not clear newer authentication or a newer booking instance.
+3. If all guards are current, abort/obsolete the active session and seat-map reads and clear the active local Seat Selection instance, including selection, ticket assignments, and feedback.
+4. Requeue the same bounded `OPEN_BOOKING` intent with the same `sessionId` through the existing Checkpoint A booking reauthentication mechanism.
+5. Open the existing Login flow.
+6. After successful authentication, run normal auth/profile gating again. READY is produced once and CHECKPOINT B consumes it to open a fresh booking instance once.
+
+Do not reopen the old local instance directly or preserve pre-hold selection across this auth-expiry boundary. There is no hold yet, so no server reservation is lost.
+
+Do not install a global 401 interceptor or call logout POST merely for expiry. A stale 401 must never clear a newer authenticated user or newer booking instance.
+
+### B. No silent guest fallback
+
+If an authenticated Seat Selection read receives 401, do not retry that read anonymously or silently fall back to guest seat-map data.
+
+Protected entry has already established an authenticated identity, and `isMine` semantics can differ with authentication. Switching identity semantics inside the same booking instance would produce inconsistent state. Reauthenticate through the existing bounded protected-action flow instead.
+
+The endpoint remains public/auth-optional. This policy governs the authenticated protected booking instance; it does not add an authentication requirement to the API endpoint.
+
+### C. Initial focus
+
+The Seat Selection Figma component does not establish a verified initial-focus target. D-024 already accepts a persistent top-right close control as a project UI decision.
+
+Use that top-right Close button as the Seat Selection modal initial-focus target through the existing Modal initial-focus mechanism. It must be available immediately when the dialog opens.
+
+Async session/seat-map loading completion, Retry, and loaded-seat rendering must not steal or automatically move focus. Closing restores focus to the original booking opener when that opener remains connected.
+
+This is an accessibility/project decision, not a claimed Figma fact.
+
+### D. Missing Adult ticket type
+
+New locally selected seats require the returned ticket type with `slug === "adult"`. Do not use array position or substitute Child, Student, the first returned type, or another guessed fallback.
+
+If `filterOptions.ticketTypes` contains no valid Adult record, treat this as a booking configuration error.
+
+During CHECKPOINT B:
+
+- the Seat Selection modal may remain open
+- independently loaded hall/seat geometry may remain visible
+- local seat selection is blocked
+- no selected-seat card is created and no ticket assignment is guessed
+- subtotal remains `₾ 0`
+- `Next: Checkout` remains natively disabled
+- available seats retain their factual available appearance rather than being restyled as sold or held
+
+Use the configuration-level error copy:
+
+`Booking configuration is unavailable. Reload the page and try again.`
+
+Expose a real `Reload page` button. Reloading the application refetches bootstrap/filter-options through the normal app boot path. Do not offer Seat Map Retry as if it could repair cached filter options. Recovery does not mutate production state.
+
+### E. Invalid / missing Adult record
+
+Apply the same configuration-error and reload-page policy when an Adult entry exists but cannot safely provide the fields required for local preview assignment under the documented TicketType schema.
+
+Do not invent missing values or substitute another type. Keep this policy narrowly scoped to configuration that prevents a valid default local ticket assignment.
+
+### F. Missing movie age-rating context
+
+Ticket-type restrictions require `movie.ageRating.minAge`. The authoritative CHECKPOINT B source is `GET /sessions/{session}`; the seat-map response alone does not supply this context.
+
+Treat a successful current session-context response as incomplete when:
+
+- `movie` is missing
+- `ageRating` is missing
+- `minAge` is missing
+- `minAge` cannot be treated as the documented numeric value
+
+Do not assume `minAge = 0`, assume unrestricted ticket types, hardcode 16/18, special-case Child, or continue ticket-type decisions from stale route data.
+
+For incomplete context:
+
+- keep the modal open
+- independently loaded hall/seat-map geometry may remain visible
+- block local seat selection and ticket assignment
+- subtotal remains `₾ 0`
+- `Next: Checkout` remains natively disabled
+- show the context-level error and expose a real Retry button
+
+Use the project copy:
+
+`Booking details are incomplete. Try again.`
+
+Retry reruns `GET /sessions/{currentSessionId}` inside the same current booking instance. Retain request/instance guards; do not create another `OPEN_BOOKING` intent merely for Retry. If the seat-map read also failed, its existing Retry state remains separate.
+
+### G. Valid rating context
+
+Evaluate D-024 ticket-type restrictions only after a valid session-context response supplies `movie.ageRating.minAge`.
+
+- If `ticketType.blockedFromRatingAge == null`, this rule does not block the type.
+- Otherwise, omit/block the type when `movie.ageRating.minAge >= ticketType.blockedFromRatingAge`.
+
+Use returned values. Do not calculate film-rating rules independently.
+
+### H. Configuration failure vs read failure
+
+Keep the failure categories and recovery paths distinct.
+
+Seat/session read failures include network failure, 404, 500, malformed required session context, and current guarded 401. Use in-modal Retry, terminal 404 treatment, or reauthentication according to the applicable D-024/D-026 rule.
+
+Bootstrap configuration failure includes a required Adult ticket type that is missing/invalid. A seat/session Retry cannot repair cached filter options; use the configuration error and `Reload page` recovery defined above.
+
+### I. Selection interaction while configuration is blocked
+
+When Adult/default assignment or rating context is unavailable, do not allow a new local selection into booking state.
+
+If configuration/context becomes invalid after a guarded retry/result transition in the same instance, clear existing local selection and ticket assignments before presenting the blocked state. Do not preserve assignments based on obsolete context.
+
+Do not alter API seat-state values. Seats may retain their factual map appearance. Explain in text that booking selection is temporarily unavailable without representing the seats themselves as sold/held.
+
+### J. CHECKPOINT B boundary remains unchanged
+
+CHECKPOINT B still:
+
+- consumes READY once
+- opens one application-level Seat Selection modal
+- reads real session context and the real nested seat map
+- keeps local pre-hold selection only
+- uses API filter options
+- calculates local preview prices and renders dynamic subtotal
+- leaves `Next: Checkout` natively disabled
+
+CHECKPOINT B still does not:
+
+- create or release holds through POST/DELETE
+- restore holds or persist hold state
+- start an `expiresAt` timer
+- enter Checkout
+- create an Order
+- render Confirmation
+
+### K. Existing D-024 facts remain authoritative
+
+Do not reopen these already-resolved policies:
+
+- unresolved `isMine` seats remain map-only, visually own-held/Selected, non-editable, and excluded from local cards and totals
+- D-026 adopts `₾ 0` as CHECKPOINT B's empty subtotal display, established from the verified empty Seat Selection Figma state during the pre-implementation Seat Selection audit
+- further selection attempts at the configured cap are blocked with `You can select up to {maxSeatsPerOrder} seats.` while available seats retain available appearance
+- close uses the top-right project control plus existing permitted Escape/backdrop semantics
+- seat geometry remains 52×52, radius 10, horizontal/vertical gaps 8/10, aisle spacer 16, and map viewport 720; seats do not shrink
+- the timer card/countdown is omitted before a real hold
+
+### L. Async / StrictMode safety
+
+The new policies preserve request-attempt identity, booking instance identity, same-session reopen distinction, expected-user/auth identity guards, stale-response rejection, StrictMode duplicate-effect safety, and READY consume-once behavior.
+
+A stale success, error, 401, or Retry result must never replace a newer booking instance or newer authenticated user.
+
+### M. Accessibility
+
+- Close is the initial-focus target.
+- Loading completion does not steal focus.
+- Configuration/context failures are announced.
+- Reload/Retry controls are real buttons.
+- Blocked selection is explained in text, not color alone.
+- Available seat appearance must not falsely communicate sold/held state.
+- `Next: Checkout` remains semantically disabled.
+
+### Reason
+
+Close the four correctness-affecting runtime policy gaps before CHECKPOINT B implementation while preserving protected entry, API ownership semantics, asynchronous safety, and the accepted pre-hold boundary. Give incomplete configuration and incomplete session context distinct, effective recovery paths.
+
+### Affected
+
+- later CHECKPOINT B booking coordinator/read guards and reauthentication handoff
+- later Seat Selection initial focus, configuration/context fallbacks, selection reset, and accessibility/QA
+
+This decision documents policy only. It implements no Seat Selection, hold, Checkout, Order, or Confirmation functionality and modifies no architecture or Figma facts. D-001 through D-025 remain unchanged.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
