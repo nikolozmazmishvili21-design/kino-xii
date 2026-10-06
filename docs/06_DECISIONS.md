@@ -2194,6 +2194,354 @@ This decision documents policy only. It implements no Seat Selection, hold, Chec
 
 ---
 
+## D-027 — Seat hold lifecycle, recovery, restoration, and Checkout handoff policy
+
+**Status:** Accepted
+**Date:** 2026-10-06
+
+### Decision
+
+Resolve the frontend HOLD lifecycle/recovery policies identified by the completed CHECKPOINT HOLD audit. This supplements D-010 hold persistence/restoration, D-012 Checkout Back behavior, D-023 protected booking replay, D-024 Seat Selection/hold authority, and D-026 read/runtime policy. Preserve D-025 Profile behavior and all prior decisions; do not rewrite them. The API remains authoritative, and this decision adds no backend transactional guarantees.
+
+### A. Confirmed API baseline
+
+Confirmed protected endpoints:
+
+- create/replace: `POST /sessions/{session}/holds`
+- retrieve/revalidate: `GET /holds/{hold}`
+- release: `DELETE /holds/{hold}`
+
+The session identifier is the integer path parameter. The create body contains only the selected seat assignments. Its schema shape is:
+
+```text
+{
+  "seats": [
+    {
+      "seatId": integer,
+      "ticketType": "adult" | "child" | "student"
+    }
+  ]
+}
+```
+
+Send map seat IDs and API ticket-type slugs, one assignment per seat. Do not send `sessionId` in the body, price, subtotal, ratio, seat code, or buyer/payment fields. Required assignment fields are `seatId` and `ticketType`; the documented array has at least one item and at most three. UI quantity limits come from `filterOptions.maxSeatsPerOrder`, and ticket choices/restrictions come from API configuration rather than hardcoded options.
+
+POST succeeds with `201` and GET with `200`, both enveloping `SeatHold` in `data`; DELETE succeeds with `204` and no body. Confirmed SeatHold fields include:
+
+- `holdId`
+- `sessionId`
+- `expiresAt`
+- `secondsRemaining`
+- `isLive`
+- `subtotal`
+- `seats[].seatId`
+- `seats[].code`
+- `seats[].ticketType.slug`
+- `seats[].ticketType.name`
+- `seats[].price`
+
+After successful validation, server Hold assignments/prices/subtotal replace local previews. A user has at most one hold per session; another POST replaces it without a preliminary DELETE. This replacement rule does not imply idempotency or transactional behavior after failed requests.
+
+### B. Next → hold creation
+
+In Seats, `Next: Checkout` is enabled only when:
+
+- the current booking instance is authenticated and the server-confirmed profile is complete
+- session, map, and configuration are usable
+- at least one local seat is selected
+- selected quantity does not exceed the configured maximum
+- every selected seat has one currently allowed ticket-type slug
+- no hold mutation is pending
+- no uncertain hold-create state is active
+
+Validate every selected assignment, not merely a filtered preview list. On activation, synchronously capture an immutable submitted assignment snapshot, acquire a provider-owned mutation lock, disable further mutation/edit controls, and send exactly one POST. Never submit from render or an effect.
+
+The lock must prevent double-click, Enter repeat, rerender, StrictMode, and same-event duplication. Mutation identity includes request identity, booking instance identity, `sessionId`, expected authenticated user, selection revision, and immutable submitted seats. An unresolved POST retains its detached request identity when its UI instance is closed/replaced; UI abandonment is not proof of mutation cancellation.
+
+### C. Hold success validation
+
+Do not accept a `201` merely because its HTTP status is successful. Before adoption, validate the data needed for a usable live SeatHold:
+
+- usable UUID `holdId`
+- matching `sessionId`
+- parseable, unexpired `expiresAt`
+- `isLive === true`
+- usable numeric `subtotal`
+- usable returned seat assignments
+- returned seat IDs corresponding to the submitted request
+- usable returned ticket data and per-seat prices required by the UI
+
+Do not fabricate missing fields. If fully valid, adopt SeatHold as authority, persist only `{ holdId, sessionId }`, replace preview prices with returned prices/subtotal, show a real `expiresAt` timer, advance to Checkout, and clear mutation pending state. Adoption must pass current request/booking/user guards.
+
+### D. Malformed success
+
+A malformed `201` may represent a completed server mutation with an incomplete response.
+
+If a usable `holdId` is present but other required data is invalid/missing, do not send a second POST. GET `/holds/{holdId}` once through current request/user guards. Adopt a valid live matching result normally. If retrieval proves terminal invalidity, expiry, or not-found, return safely to Seats. If retrieval is transient/ambiguous, enter UNCERTAIN.
+
+If no usable `holdId` is available, enter UNCERTAIN. Do not claim creation failed, fabricate an ID, or automatically retry POST.
+
+### E. Uncertain hold-create state
+
+Use an explicit phase such as `hold.phase = "uncertain"` when the frontend cannot prove whether the previous POST created/replaced a server hold. Network failure, unknown server failure including `500`, or unusable success data can require this state.
+
+While uncertain:
+
+- never advance to Checkout
+- show no fake timer or client preview represented as server-held values
+- never automatically retry POST or start another automatic creation
+- preserve the submitted snapshot only for explanatory/recovery UI
+- prevent stale results from reviving an abandoned instance
+
+Use project fallback copy:
+
+`We couldn't confirm whether your seats were held. Start over to try again.`
+
+Provide a real `Start over` action. It abandons the uncertain UI instance, clears unverified authoritative hold state, refetches current session/seat map, and returns to fresh Seats. It does not automatically submit, claim the unknown hold was released, or infer that the earlier POST failed.
+
+If an ambiguous replacement POST had a previously verified Hold, its old ID does not establish continued authority. Block Checkout and do not present its timer as proof that it survived. Keep the previous `{ holdId, sessionId }` reference only as recovery evidence while uncertain; it may be revalidated later, not assumed valid. Start over clears that reference and issues one best-effort DELETE for the previous known ID if it can still be targeted with current auth. An unknown replacement without a known ID cannot be targeted and is left to expiry. Do not claim all possible holds were released.
+
+After Start over, refreshed `isMine` seats may belong to an unknown server Hold. Preserve D-024: map-only own-held appearance, non-editable, excluded from local cards/subtotal. Do not make them selectable to avoid a temporary dead end or invent a hold ID/ticket assignment. For this recovery state, use Kino XII project UX copy, not API/Figma text:
+
+`Some seats may remain temporarily unavailable until the previous hold expires.`
+
+A later explicit Next is a new user-driven replacement attempt under the API's same-user/session replacement rule. It must still satisfy the provider mutation lock. This is bounded explicit recovery, not an exactly-once or idempotency guarantee.
+
+### F. Late success after UI abandonment
+
+Closing/replacing an instance while creation is unresolved does not prove server cancellation. Keep a detached cleanup identity for that request.
+
+If an abandoned request later returns a valid successful SeatHold, do not reopen UI, persist it as the active booking, or overwrite a newer hold/reference. Immediately attempt best-effort DELETE for its returned `holdId`, scoped only to that abandoned request/hold/user identity. Cleanup must not target or alter a newer active hold; do not assume replacement IDs are guaranteed to differ.
+
+If the abandoned request ends ambiguously without a usable `holdId`, no release can be targeted. Rely on server expiry and leave newer booking state untouched. Do not substitute a newer user's authentication for the captured cleanup identity.
+
+### G. Authenticated 401 during create
+
+A received server `401` differs from ambiguous transport failure. OpenAPI explicitly requires Login and replay of the interrupted protected action. Use one bounded, transient `HOLD_CREATE` continuation containing only:
+
+- `sessionId`
+- immutable submitted `seatId`/`ticketType` assignments
+- original expected account identity
+- `replayCount`, bounded to one replay
+
+Do not persist the continuation. Before handoff, verify current mutation/booking identity and that the expected user is still current; clear mutation pending state and do not retry anonymously. Use existing Login/Profile gating.
+
+Same-account successful reauthentication may continue. Account change, Login cancellation, or replaced/new booking intent discards the continuation. Before replay, reopen/revalidate booking context, refetch session and authenticated seat map, and revalidate every captured assignment against current availability/configuration/rules.
+
+When the interrupted POST was replacing a previously verified Hold, its seats may appear `isMine` in the refreshed authenticated map. Count them as valid for replay only when their IDs belong to that verified previous Hold, the current map still reports `isMine`, the replay snapshot still contains them, and their ticket assignments remain valid. Newly added snapshot seats must satisfy ordinary current selectable/available rules. Arbitrary extra `isMine` seats are not valid replay assignments.
+
+If the exact submitted mutation remains valid, replay POST automatically once. If it is no longer valid, do not replay: reconcile to Seats, show the changed availability/rule state, and require a fresh explicit Next after review. Never replay more than once or loop on another `401`.
+
+The same-account-only HOLD_CREATE continuation is a Kino XII replay-safety policy layered on OpenAPI's replay requirement, not an API-defined account-continuation guarantee. This create-specific continuation does not change D-026's read-specific reset/requeue policy or D-025's no-auto-replay Profile PUT policy. It follows the documented received-401 replay instruction without claiming POST idempotency.
+
+### H. 409 conflict
+
+The confirmed root response field is `contested: string[]`, containing seat codes. For a current mutation, map codes against the immutable submitted snapshot and its captured seat-code correspondence; immediately remove only matching draft assignments, preserve unaffected assignments/ticket choices, show the server message and contested codes accessibly, refetch the authenticated map, and remain in Seats. Never enter Checkout on `409`.
+
+Until authenticated seat-map refetch succeeds, contested codes use a transient conflict/sold-unavailable presentation and remain non-selectable so they cannot trigger an immediate repeat conflict. Keep this in provider/UI reconciliation state; do not mutate the API seat-map response object. The successful refreshed factual map replaces the transient presentation. If refetch fails, keep contested seats non-selectable, expose existing seat-map Retry, and do not invent final factual seat state beyond the conflict evidence. This records OpenAPI's mark/drop behavior without overwriting API data.
+
+If `contested` is missing/malformed, do not invent lost IDs. Show the server message, refetch, and reconcile the local draft against factual refreshed availability. Preserve only valid selections and do not claim the failed request held seats. Ignore a stale `409` completely.
+
+When the request was replacing an existing hold, apply §J as well; preserving unaffected local draft assignments does not establish that the old hold survived.
+
+### I. Replacement POST with an existing hold
+
+Checkout Back retains the verified live hold. On returning to Seats, hydrate the editable draft from server Hold assignments; keep the Hold authoritative and its timer running. Draft edits are local only.
+
+If the draft differs from the active Hold, show this Kino XII project UX copy, not API/Figma text:
+
+`Changes are not held until you continue.`
+
+Do not claim added/changed draft seats or ticket assignments are covered by the old Hold. An unchanged draft may return to Checkout through Next without another POST, provided the verified hold is still live. A changed draft requires POST replacement. Do not DELETE first.
+
+### J. Replacement failure and previous hold
+
+A failed replacement must not assume the old Hold survived. Capture its previously verified `holdId` separately. After a definite replacement failure such as `409`/`422`, GET that previous hold and reconcile against current authenticated map evidence under guards.
+
+If it is confirmed live and consistent, retain it as the active server Hold, restore its authoritative assignments/prices/timer, return the editable draft to those verified assignments, and keep the replacement-failure message visible. Next may return to Checkout without another POST while that draft remains unchanged and the hold live.
+
+If the old hold is no longer live/valid or ownership/map evidence contradicts it, clear active Hold authority and persistence. Remain in Seats with factual refreshed availability and valid local draft only.
+
+If previous-hold revalidation is transient/ambiguous, block Checkout and offer Retry / Start over. Do not pretend the old hold still exists. An ambiguous replacement POST uses §E: the previous reference is recovery evidence only, not authoritative Hold/timer proof. Start over clears it and best-effort targets that known ID when current auth permits; an unknown replacement is left to expiry without claiming all possible holds were released.
+
+### K. 422 policy
+
+Preserve the global distinction: `422` with `errors` maps recognized fields where possible; message-only `422` is a business-rule failure and shows the exact server message. Confirmed request concepts are `seats`, `seatId`, and `ticketType`.
+
+The POST description documents field validation, while its response schema references message-only `BookingBlocked`. Do not invent guaranteed field/index-key formats to bridge that contract gap. If indexed keys are actually returned, map through immutable submitted request order, never current object enumeration. Keep unmapped errors visible rather than silently discarding them.
+
+For a current message-only `422`, show the exact server business-rule message. Do not parse arbitrary text or inspect substrings to infer incomplete profile, age restriction, session start, or another cause. Perform one guarded fresh `GET /me` only when profile-completion remediation may be relevant to the active protected booking. Use the fresh server User as structured evidence: `profileComplete === false` routes through existing Profile completion; `profileComplete === true` stays in Seats without invented Profile remediation. If the read cannot establish the relevant state, do not guess the cause or remediation. Refetch session/map when factual freshness is needed, and apply existing auth/Profile and request/user guards.
+
+Do not automatically replay the rejected POST solely because `/me` reports an incomplete profile. After Profile completion, return through existing booking entry/gating, refetch/revalidate context, and require fresh explicit Next for a new hold mutation. The `422` was a definite rejection; OpenAPI defines no automatic HOLD replay for this business-rule response. Preserve draft only without crossing account/session identity boundaries; otherwise rebuild from factual current context. Replacement failures also follow §J.
+
+### L. Release — user abandonment
+
+A known live hold is intentionally abandoned by explicit Close, accepted Escape/backdrop Close, starting a different-session booking, or explicit logout. Checkout Back and page refresh are not abandonment. Timer expiry requires no DELETE.
+
+For intentional abandonment:
+
+- close/switch promptly
+- immediately clear that booking's persisted restoration reference so it is not restored later
+- capture exact hold/user cleanup identity
+- issue one best-effort DELETE while current authentication is available
+- do not block Close/navigation/new-session flow on cleanup success
+- do not retry in a loop
+- prevent old DELETE completion from changing a newer hold/reference
+
+If DELETE fails, leave the UI action completed, do not restore the abandoned hold, rely on expiry, and do not invent release success. Immediate reference cleanup specifies intentional abandonment; it is not proof that DELETE succeeded. No browser/window unload or beacon mechanism is introduced.
+
+### M. Logout release sequencing
+
+For explicit logout with a known live hold, initiate the captured DELETE while the current token is still available to that request. Logout must proceed even if release fails; failure must not trap the user in the authenticated session. Clear protected booking UI/restoration reference on logout and rely on expiry if release did not complete. Add no global release interceptor.
+
+### N. Session replacement
+
+Opening a different session abandons the old flow. Capture/best-effort release its known live hold, clear its reference, and open the new bounded booking flow promptly. Old release completion cannot affect the new session. Do not create a queue. Unresolved old creation follows the detached cleanup/guard rules in §§B/F.
+
+### O. Restoration — terminal vs transient
+
+Keep D-010's exact `{ holdId, sessionId }` reference in `sessionStorage` through a storage abstraction. Do not persist Hold/map/assignment objects, payment data, or a new auth-token copy. Restoration starts only after validated authentication is available; do not issue protected GET using unknown/stale auth.
+
+Terminal outcomes are `403`, `404`, `isLive === false`, expired `expiresAt`, malformed reference, or a definitively invalid Hold/session mismatch. Clear the reference and expose no stale protected booking data. Expired outcomes use the accepted expiry copy.
+
+Network/unknown server failures and recoverable restoration read failures are transient. Keep the reference; do not fabricate state or expose unverified assignments. Use this Kino XII project UX copy, not API/Figma text:
+
+`We couldn't restore your seat hold. Check your connection and try again.`
+
+Provide Retry and Start over. Retry reruns guarded restoration. Start over clears the reference, best-effort releases a known validated live hold when available, otherwise relies on expiry, and opens fresh Seats only through explicit user action.
+
+This distinguishes transient read failure from terminal invalidation for D-010 cleanup. It does not change the persisted shape or authorize restoring on a failed read. A `401` requires validated authentication before restoration can resume; it is not ownership proof or permission to use another account's protected data.
+
+### P. Restored Hold / map mismatch
+
+Activate restored Hold state only after verifying a live unexpired Hold, matching session, valid returned assignments/prices, and consistent authenticated map ownership evidence. Refetch session context/map as part of the complete restoration flow.
+
+Extra `isMine` seats outside the verified Hold remain map-only and excluded from cards/subtotal. If Hold seats are missing, not `isMine`, sold/unavailable, or otherwise contradictory, do not partially hydrate, guess, or enter Checkout. Show this Kino XII project UX copy, not API/Figma text:
+
+`We couldn't verify your saved seat hold. Retry or start over.`
+
+Retry re-GETs Hold, refetches authenticated map/session context, and reruns full guarded reconciliation. Start over best-effort releases the known hold when possible, clears the reference and protected restored data, and returns to fresh Seats. `isMine` alone never proves restoration.
+
+### Q. Fresh intent during restoration
+
+Restoration creates no queue. If fresh explicit intent arrives for the same session, prefer completing/revalidating the stored Hold and avoid duplicate booking instances.
+
+For a different session, cancel/obsolete restoration UI work, clear the old reference as abandonment, best-effort release its known `holdId` when authenticated, and continue with the fresh bounded intent. Stale restoration must not reopen/replace the newer session.
+
+### R. Hold expiry
+
+Use server `SeatHold.expiresAt` as the authoritative expiry. Derive:
+
+```js
+remainingMs = Math.max(0, Date.parse(expiresAt) - Date.now());
+```
+
+`secondsRemaining` is not a ticking source. `filterOptions.holdMinutes` supplies duration/rule context, not a client-created expiry or fallback for invalid live data.
+
+On expiry of the current active hold, transition once: invalidate Checkout readiness, clear Hold authority/reference and held/local assignments, return to Seats, refetch authenticated map, and announce:
+
+`Your hold time expired. Please re-select your seats.`
+
+Apply this on current timer expiry or server-confirmed non-live/expired retrieval, including while on Seats after Back. Do not DELETE merely because time reached zero.
+
+### S. Timer format
+
+Accepted project display algorithm:
+
+- derive from current remaining milliseconds
+- use `Math.ceil(remainingMs / 1000)` for displayed seconds while positive
+- show unpadded total minutes and two-digit seconds
+- examples: `7:48`, `1:05`, `0:09`, `61:05`, and `0:00` at expiry
+
+This matches the verified Figma M:SS sample without assuming duration stays below an hour. Use `role="timer"` without per-second live announcements; announce expiry separately.
+
+Recalculate approximately once per second, on visibility return/window focus, and immediately when hold identity/`expiresAt` changes. Never store a decrementing counter as authority. Guard the expiry transition against duplication and stale callbacks.
+
+### T. Hold success → Checkout boundary
+
+Successful validated Hold advances `step = "checkout"` in CHECKPOINT HOLD. Activate Checkout progress, show real timer and authoritative held assignments/prices/subtotal, and keep Close and Back to Seats available. No order mutation occurs.
+
+The intermediate handoff shell contains only:
+
+- booking/session header
+- Checkout progress state
+- real hold timer
+- authoritative held-seat summary/subtotal
+- Back to Seats
+- Close
+
+Omit payment/card controls entirely. Do not render fake/disabled payment controls, buyer/payment placeholders, or a fabricated purchase CTA. HOLD implements no payment-card state, card inputs, order creation, confirmation, or refund. The subsequent CHECKOUT checkpoint adds real payment/order UI. This shell is accepted project checkpoint policy, not an additional Figma variant.
+
+### U. Checkout Back → Seats
+
+Back from the handoff shell keeps verified Hold, persistence, and timer. Return to Seats and hydrate editable draft from Hold assignments. Use local preview UI while editing.
+
+An identical draft returns through Next without POST while the hold remains verified/live. A changed draft displays the project UX copy `Changes are not held until you continue.` (not API/Figma text) and Next performs replacement POST. Local edits are never represented as already reserved. Keep draft preview and authoritative held values distinct; apply §J after definite replacement failure.
+
+### V. Server price authority
+
+After successful hold creation/restoration, authoritative held values are `SeatHold.seats[].price`, returned ticket-type slug/name, and `SeatHold.subtotal`. Do not recompute held prices from filter ratios or add format surcharge. Local preview pricing applies only to the editable Seats draft before successful replacement; it cannot override held values.
+
+### W. Pending UI
+
+During POST, natively disable Next, seat add/remove controls, and ticket changes; action/state guards must also block edits. Keep Close governed by detached late-success cleanup. Expose one accessible status announcement using Kino XII project UX copy, not API/Figma text:
+
+`Holding seats…`
+
+Do not spam announcements or change button copy merely to simulate an unverified Figma pending variant.
+
+### X. Release failure copy / UX
+
+Do not add a global toast system solely for release failure. Intentional Close/session replacement/logout completes even if release fails.
+
+If booking/recovery UI remains visibly open after an explicit release/recovery action and release fails, show this exact Kino XII project UX fallback copy, not API/Figma text:
+
+`We couldn't release your seats immediately. They will expire automatically.`
+
+If the user intentionally closed/switched/logged out and the UI is already gone, silent server-expiry fallback is acceptable. Never reopen closed booking UI just to show release failure, and never claim release success.
+
+### Y. Storage failure
+
+If `sessionStorage` is unavailable, do not crash. The current-tab active Hold may continue, but do not pretend refresh restoration is available. Do not duplicate Hold data into another storage mechanism or invent a persistence fallback.
+
+### Z. Checkpoint B / HOLD / CHECKOUT boundary
+
+Preserve the staged scope:
+
+- CHECKPOINT B: local selection only
+- CHECKPOINT HOLD: real Hold lifecycle, timer, restoration, release, and Checkout handoff shell
+- CHECKPOINT CHECKOUT: payment/order/confirmation
+
+No `POST /orders` in HOLD and no card persistence anywhere.
+
+### Backend ambiguity boundary
+
+D-027 does not claim that POST is idempotent, lost responses mean mutation failure, failed replacement preserves the prior Hold, DELETE is guaranteed during unload, `isMine` alone proves restoration, or `500` means no Hold was created.
+
+Where backend guarantees are absent, use uncertain state, guarded revalidation, bounded explicit user recovery, and server expiry. Do not invent an idempotency key, hold-discovery endpoint, or transactional response guarantee. Received-401 replay is bounded to the explicit API instruction; ambiguous transport outcomes never inherit that replay path.
+
+### Async safety
+
+Guard create/retrieve/release/restore results with booking instance, request, session, and expected-user identity, plus selection revision and hold identity where applicable. Detached cleanup retains its originating identity rather than borrowing a newer instance/user. Apply synchronous provider mutation guards across rerenders and instance replacement.
+
+Stale success, `401`, `409`, `422`, release completion, restoration result, and timer expiry must never modify a newer booking/user/hold. A stale successful creation can trigger only its guarded detached cleanup, never active-state adoption. Cleanup must not release a newer active hold or clear its persistence. Fetch abortion is not proof of server mutation cancellation.
+
+### Reason
+
+Resolve frontend correctness/recovery choices before CHECKPOINT HOLD implementation while preserving API ownership, server price/expiry authority, protected-action safety, and separate payment/order scope. Missing backend guarantees remain explicit rather than being replaced by client assumptions.
+
+### Affected
+
+- later BookingProvider/reducer lifecycle, mutation identity, and guarded recovery
+- later hold API/storage modules, restoration, reconciliation, and timer
+- later create-specific auth continuation and abandonment/logout sequencing
+- later Seats draft/pending/recovery UI and Checkout handoff shell
+- later focused lifecycle tests and intercepted browser QA
+
+This decision documents policy only. It implements no source/CSS changes, endpoints, payment, Order, or Confirmation behavior, changes no Figma facts or architecture document, and leaves D-001 through D-026 unchanged.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
