@@ -7,6 +7,7 @@ import { useAuth } from "../auth/AuthContext.js";
 import { BookingEntryContext } from "../auth/BookingEntryContext.js";
 import { createBookingAction } from "../auth/pendingAction.js";
 import { ProfileAccessContext } from "../auth/ProfileAccessContext.js";
+import BookingProvider from "../booking/BookingProvider.jsx";
 
 export default function AppShell() {
   const isHome = useMatch(ROUTES.home);
@@ -111,19 +112,21 @@ export default function AppShell() {
   return (
     <BookingEntryContext.Provider value={bookingEntry}>
       <ProfileAccessContext.Provider value={profileAccess}>
-        <div className={`app-shell${isHome ? " app-shell--home" : ""}${isMovieDetail ? " app-shell--movie-detail" : ""}${isProfile ? " app-shell--profile" : ""}`}>
-          <Navbar onOpenAuth={openAuth} />
-          <Outlet />
-          {visibleAuthMode !== "closed" && (
-            <AuthModal
-              mode={visibleAuthMode}
-              onSwitchMode={setAuthMode}
-              onClose={cancelAuth}
-              onSuccess={finishAuth}
-              openerRef={openerRef}
-            />
-          )}
-        </div>
+        <BookingProvider authClosed={visibleAuthMode === "closed"}>
+          <div className={`app-shell${isHome ? " app-shell--home" : ""}${isMovieDetail ? " app-shell--movie-detail" : ""}${isProfile ? " app-shell--profile" : ""}`}>
+            <Navbar onOpenAuth={openAuth} />
+            <Outlet />
+            {visibleAuthMode !== "closed" && (
+              <AuthModal
+                mode={visibleAuthMode}
+                onSwitchMode={setAuthMode}
+                onClose={cancelAuth}
+                onSuccess={finishAuth}
+                openerRef={openerRef}
+              />
+            )}
+          </div>
+        </BookingProvider>
       </ProfileAccessContext.Provider>
     </BookingEntryContext.Provider>
   );
