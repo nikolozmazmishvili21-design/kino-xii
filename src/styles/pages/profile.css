@@ -1,0 +1,182 @@
+.app-shell--profile {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-shell--profile > .navbar {
+  flex-shrink: 0;
+}
+
+.profile-page {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 1728px;
+  margin-inline: auto;
+  min-height: 750px;
+  padding: 6.5px 51px 0;
+  background: var(--color-page);
+}
+
+.profile-page__header {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  border-bottom: 1px solid var(--color-surface);
+}
+
+.profile-page__header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: normal;
+}
+
+.profile-page__navigation {
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 17px;
+}
+
+.profile-page__active {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 2px;
+}
+
+.profile-page__active::after {
+  display: block;
+  width: 139px;
+  height: 2px;
+  margin-inline: -2px;
+  background: var(--color-accent);
+  content: "";
+}
+
+.profile-page__navigation button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
+.profile-page__column {
+  width: 880px;
+  margin-top: 42px;
+}
+
+/* D-025 inserts this banner; its spacing deliberately shifts the raw Figma form. */
+.profile-page__banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 24px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--tint-warning);
+  color: var(--color-warning);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+.profile-page__banner--complete {
+  background: var(--tint-success);
+  color: var(--color-success);
+}
+
+.profile-page__banner p {
+  margin: 0;
+}
+
+.profile-page__banner p:not(.profile-page__status) {
+  color: var(--color-muted);
+}
+
+.profile-page__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 15px;
+}
+
+.profile-page__status img {
+  width: 14px;
+  height: 14px;
+}
+
+.profile-form__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.profile-form__fields > .form-field:first-child {
+  margin-bottom: -2px;
+}
+
+.profile-form__fields > .form-field:nth-child(2) {
+  margin-bottom: 4px;
+}
+
+.profile-form input[readonly] {
+  color: var(--color-muted);
+}
+
+.profile-form input[type="date"] {
+  color-scheme: dark;
+}
+
+.profile-form .form-field:not(.form-field--error) input[type="date"]:invalid,
+.profile-form .form-field:not(.form-field--error) select:has(option:checked[value=""]) {
+  color: var(--color-muted);
+}
+
+.profile-form .form-field--error input[type="date"]::-webkit-calendar-picker-indicator,
+.profile-form .form-field--success input[type="date"]::-webkit-calendar-picker-indicator {
+  margin-right: 12px;
+}
+
+.profile-form select,
+.profile-form select:hover,
+.profile-form select:focus {
+  appearance: none;
+  padding-right: 40px;
+  background-image: url("../../assets/icons/chevron-down.svg");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 16px;
+}
+
+.profile-form .form-field--error select,
+.profile-form .form-field--success select {
+  background-image: none;
+}
+
+.profile-form__save {
+  width: 143px;
+  margin-top: 36px;
+  white-space: nowrap;
+}
+
+.profile-form__feedback {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.profile-form__feedback[role="alert"] {
+  color: var(--color-accent);
+}
+
+.profile-page + .home-footer {
+  flex-shrink: 0;
+  min-height: 98px;
+}

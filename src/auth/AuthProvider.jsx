@@ -97,6 +97,26 @@ export default function AuthProvider({ children }) {
     return true;
   }, [updateActions]);
 
+  const isCurrentUser = useCallback((expectedUser) => {
+    return Boolean(expectedUser && currentUser.current === expectedUser && !mutation.current);
+  }, []);
+
+  // Profile expiry needs no invented booking intent and cannot clear newer auth.
+  const expireProfileSession = useCallback((expectedUser) => {
+    if (!isCurrentUser(expectedUser)) return false;
+    revision.current += 1;
+    restoration.current = Promise.resolve(null);
+    currentUser.current = null;
+    clearToken();
+    setAuthState({ ...INITIAL_STATE, status: "guest" });
+    const actions = protectedActions.current;
+    updateActions({
+      pendingAction: actions.pendingAction ?? actions.bookingReadyAction,
+      bookingReadyAction: null,
+    });
+    return true;
+  }, [isCurrentUser, updateActions]);
+
   const restoreSession = useCallback(() => {
     if (mutation.current) {
       // Boot waits for an active auth action instead of starting an older read.
@@ -274,10 +294,12 @@ export default function AuthProvider({ children }) {
       consumeBookingReady,
       replaceUser,
       expireSession,
+      expireProfileSession,
+      isCurrentUser,
     }),
     [authState, actionState, login, register, logout, restoreSession,
       setPendingAction, clearProtectedAction, markBookingReady, consumeBookingReady,
-      replaceUser, expireSession],
+      replaceUser, expireSession, expireProfileSession, isCurrentUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
