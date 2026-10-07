@@ -2542,6 +2542,320 @@ This decision documents policy only. It implements no source/CSS changes, endpoi
 
 ---
 
+## D-028 — Checkout, order submission, uncertainty, confirmation, and Tickets handoff policy
+
+**Status:** Accepted
+**Date:** 2026-10-07
+
+### Decision
+
+Accept the following CHECKPOINT CHECKOUT policies following the completed read-only Checkout audit. D-028 supplements, not replaces, D-010, D-012, D-023, D-024, D-025, D-026, and D-027. Earlier decisions remain unchanged. Extend the completed HOLD foundation; do not redesign its creation, restoration, timer, or Back behavior.
+
+Source baseline: `02_OPENAPI.json` governs backend behavior; `01_ASSIGNMENT_SPEC.md` governs required functionality; the completed audit's exact GTU Figma findings govern verified visuals; accepted decisions and compatible `05_ARCHITECTURE.md` guide frontend behavior. Sections explicitly labeled FACT record source facts. Accepted frontend recovery, copy, normalization, and presentation choices below are Kino XII project policy, not additional backend guarantees.
+
+### A. Confirmed Order API — FACT
+
+`POST /orders` requires Bearer authentication and an `application/json` request body. Its seven documented fields are all required strings. Construct the frontend payload with exactly these fields:
+
+```text
+{
+  holdId,
+  fullName,
+  email,
+  mobileNumber,
+  cardNumber,
+  expiry,
+  cvv
+}
+```
+
+| Field | Confirmed constraint |
+| --- | --- |
+| `holdId` | UUID |
+| `fullName` | 3–50 characters |
+| `email` | Email format |
+| `mobileNumber` | Nine digits starting with 5; OpenAPI pattern `^5\d{8}$` |
+| `cardNumber` | 16 digits |
+| `expiry` | `MM/YY`; valid month 01–12; OpenAPI says not in the past, Assignment says in the future |
+| `cvv` | Three digits |
+
+Do not send seats, `sessionId`, subtotal, total, price, `cardholderName`, `paymentMethod`, or billing address. Those fields are not documented in this request. This exact-payload rule does not claim that the OpenAPI schema explicitly rejects every additional property.
+
+The API strips spaces from card/mobile numbers and accepts spaced input. No Luhn or card-brand validation rule exists in the sources. Payment is simulated: the endpoint validates the card, retains only its last four digits, and charges nothing. This API fact does not authorize real production booking mutations during development or QA.
+
+Success is `201` with `{ data: Order }`. Documented endpoint failures are `401`, `403`, `409`, and `422`. `404` and `500` are not endpoint-specific documented response schemas; generic API error guidance does not establish rollback guarantees.
+
+### B. Returned Order and recovery capabilities — FACT
+
+Order defines `id`, `reference`, `status` (`paid` or `refunded`), `totalPrice`, `paidAt`, nullable `refundedAt`, `isUpcoming`, `isRefundable`, `cardLastFour`, `contact`, `session`, and `tickets`. Contact contains `fullName`, `email`, and `mobileNumber`. Tickets contain `id`, `seatCode`, `ticketType.slug`, `ticketType.name`, and `price`. Session carries movie, venue, hall, date/time, format, and language information.
+
+The only documented returned card information is `cardLastFour`; full card number, expiry, and CVV are not echoed. There is no documented Order `holdId`, QR, download URL, or ticket `seatId`. Render confirmation from returned Order fields rather than Hold/local previews; do not construct missing fields or order references.
+
+`GET /tickets` requires Bearer authentication and returns `200 { data: Order[] }`. Optional `filter` values are `upcoming` and `past`; without a filter it returns both, newest session first. Each Order already contains its session/ticket information. No direct Order GET, Order lookup by Hold, idempotency key, or client request identifier is documented. The refund endpoint exists but refund implementation is outside this checkpoint.
+
+### C. Payment state and security
+
+`cardNumber`, `expiry`, and `cvv` exist only in local Checkout form state and transient request construction. They must never enter BookingContext, reducer state, localStorage, sessionStorage, URL, logs, debug probes, or auth/pending-action continuations. A coordinator may track submission identity without retaining the payment payload as shared state.
+
+Buyer edits remain Checkout-local and do not automatically update Profile. Initialize `fullName`, `email`, and `mobileNumber` from the authoritative current User when entering Checkout; payment fields start empty. Never derive `user.profileComplete` from local form validity.
+
+Clear sensitive payment fields on successful Order creation, full abandonment/Close, account change/logout, explicit Start over, and terminal Checkout invalidation. Do not persist buyer/payment drafts or restore payment fields after refresh. Returned Order, including server `cardLastFour`, may be held as the authoritative purchase result under account guards.
+
+### D. Checkout Back
+
+Preserve D-012/D-027: Back returns to Seats, keeps the current verified live Hold and its reference, keeps its timer running, and hydrates the editable seat draft from Hold assignments. It sends neither DELETE nor Order POST.
+
+Clear `cardNumber`, `expiry`, `cvv`, and payment-field validation errors on Back. Non-sensitive buyer edits may remain local only when the same Checkout component/runtime instance returns without account/session change. If Checkout unmounts on Back, reinitializing buyer fields from current User on return is acceptable. Never persist buyer edits or place them in shared authoritative Profile state merely to retain this draft.
+
+This payment clearing is project security policy: sensitive values do not survive leaving Checkout. Back is disabled during submission and is not a recovery/resubmission action from uncertain Order state.
+
+### E. Pre-submit readiness
+
+Before Order POST, synchronously require:
+
+- authenticated current same account and server `profileComplete === true`
+- current booking instance/session
+- active verified Hold with `isLive === true`, matching context, usable authoritative assignments/prices, and a parseable `expiresAt` strictly later than the current time
+- no recovery, uncertain Order, unresolved conflicting mutation, or completed Order for the instance
+- valid local form under confirmed rules
+
+Do not automatically GET Hold before every submit. Such a read is not source-required and cannot eliminate the race after it completes. Check readiness again at dispatch; the server remains authoritative. Guarded GET revalidation remains required for the specific reauthentication/conflict recovery paths below.
+
+### F. Client validation and normalization
+
+Validate on blur and again on submit. Mirror only the confirmed request/Assignment constraints in §A. Trim surrounding whitespace from fullName/email for validation/request construction. Allow spaces while typing card/mobile; remove spaces from normalized validation/submission copies, without unexpectedly changing the displayed draft during typing.
+
+Add no Luhn, card-brand validation, four-digit CVV support, country-code handling, undocumented character whitelist, or additional punctuation normalization. The Hold ID comes from verified booking state, not an editable input. Exact client error copy is Kino XII project UX unless it is source/server-provided; do not attribute invented strings to API or Figma. Server validation remains authoritative.
+
+Accepted expiry interpretation: valid `MM/YY`, month 01–12; accept the current calendar month through its end; reject an earlier month/year. This is Kino XII frontend policy resolving OpenAPI's “not in the past” versus Assignment's “in the future” wording, not a claim about an undocumented server boundary. Do not manufacture a local day/time expiry field in the API payload.
+
+### G. Duplicate-submit lock and request identity
+
+Use one semantic form `onSubmit`. Acquire a synchronous submit lock before asynchronous work. Never POST from render or an effect. Disable submit immediately and guard the handler independently of queued React renders so double click, Enter repetition, rerender, StrictMode, and repeated handlers still produce exactly one POST.
+
+Capture non-sensitive identity: booking instance, account ID, auth generation/token identity without logging the token, session ID, Hold ID, and submit request ID. Keep unresolved request identity in the runtime/coordinator even if active UI expires/closes. Once a valid Order is adopted for an instance, no second POST may be accepted for that booking/order instance.
+
+These are frontend duplication controls, not server idempotency or exactly-once purchase guarantees.
+
+### H. Pending controls, CTA, and timer
+
+The purchase CTA is exactly `Pay & Complete Order`; Assignment copy takes priority over Figma's `Pay: Complete order`. Enable only when form is client-valid, Hold is usable, no mutation is pending, and Checkout authority/readiness is established. Figma's active sample button is not proof of valid payment data.
+
+While Order POST is pending, disable Pay, every Checkout input, Back, and seat-edit navigation. Close, Escape, and backdrop Close remain available under §§O–Q. Continue the visible timer from server `expiresAt` until expiry; do not announce every tick.
+
+Keep CTA dimensions/style and use disabled pending button copy `Completing order…`. Announce one accessible status `Completing your order…`. Both strings and this pending behavior are Kino XII project UX/policy, not API/Figma pending-state facts.
+
+### I. Order 401 — explicit payment re-entry and continuation
+
+OpenAPI instructs reauthentication/replay. Order has no documented idempotency guarantee, and sensitive payment values cannot enter shared/persisted continuation state. For a definite CURRENT `401` response from Order POST, treat that received response as rejection of the submitted mutation; do not infer this outcome from transport failure and do not automatically replay POST.
+
+Retain only non-sensitive Checkout context, clear cardNumber/expiry/cvv before authentication, and invoke the existing Login flow. Preserve one bounded, transient `ORDER_REAUTH` continuation containing booking instance, `sessionId`, `holdId`, expected account ID, and replayCount metadata. It contains no payment data and is never persisted. Do not copy the HOLD_CREATE automatic-replay policy into Order submission.
+
+After successful same-account authentication, guarded GET `/holds/{holdId}` must verify the same live, unexpired, consistent Hold; revalidate session context as needed and preserve existing authenticated-map reconciliation rules where applicable. Reapply server profile-completion gating. Return to Checkout only after authority is re-established, initialize buyer fields from current User if needed, and require payment re-entry plus a fresh explicit Pay action. Never automatically POST after Login.
+
+Account change, authentication cancellation, new booking intent, or invalid Hold discards this continuation. A transient verification failure blocks Checkout pending guarded recovery, rather than permitting unverified Pay. No automatic authentication/POST loop is introduced.
+
+This is an explicitly accepted Kino XII resolution of the sources' automatic-replay wording: it satisfies safe continuation intent through reauthentication, revalidation, payment re-entry, and explicit resubmission. It does not silently claim literal automatic POST replay or introduce a backend replay/idempotency guarantee.
+
+### J. 422 field errors
+
+For `422` with `errors`, recognize only flat keys `fullName`, `email`, `mobileNumber`, `cardNumber`, `expiry`, `cvv`, and `holdId`. Map the six form keys to their inputs; Hold ID is booking-level feedback. These are request-derived mapping keys, not an API guarantee that every error uses a fixed enumerated key set.
+
+Keep unknown keys visibly surfaced. Focus the first recognized invalid input after render. Keep payment values/errors local, clear stale field errors when their field changes, and use server messages. Do not infer nested/indexed aliases or parse message text to guess field causes.
+
+### K. Message-only Order 422 — expired Hold
+
+The Order endpoint documents message-only `422` as Hold expiry, despite its formal response reference being ValidationError. Support both documented shapes. For message-only expiry, leave Checkout: clear active Hold authority, stored reference, local seat draft, and payment fields; stop the timer; return to Seats; refetch the authenticated seat map; show the exact accepted warning:
+
+`Your hold time expired. Please re-select your seats.`
+
+Do not DELETE solely because the Hold expired. Do not classify `422` with field `errors` as expiry by parsing its text.
+
+### L. Order 409 and previous Hold recovery
+
+FACT: Order `409` has root `message` and `contested: string[]`; the endpoint describes seats sold by another checkout in between. It does not document `409` as expired Hold or already-ordered Hold.
+
+Show the exact server message and contested codes, adopt no confirmation, clear Order pending state/payment fields, and return to Seats. Match contested codes against the captured verified Hold/assignment correspondence. Remove only matching assignments and preserve unaffected ticket choices where still valid; refetch the authenticated map. Missing/malformed contested data must not produce invented seat IDs; use factual refreshed availability for reconciliation.
+
+Do not assume the previous Hold survived. Before reusing any authority, guarded GET `/holds/{holdId}` must verify the requested Hold, same session, `isLive`, unexpired expiry, usable assignments/prices, and consistency with the refreshed authenticated map.
+
+- Verified: restore the usable remaining server Hold, reset the editable draft to its verified assignments, and keep conflict feedback visible. Do not manufacture a reduced Hold by editing its response locally.
+- Terminal: clear Hold/reference and remain in Seats with factual valid draft state only.
+- Transient/ambiguous verification: block Checkout and use the existing guarded recovery pattern with Retry / Start over. A read failure does not establish live Hold authority or justify another Order POST.
+
+This recovery policy adds no guarantee that a failed Order preserves any Hold.
+
+### M. Definite 403 / defensive 404
+
+FACT: documented Order `403` means the Hold belongs to another account. Show the exact server message, block Checkout, clear payment fields, and do not retry automatically. Revalidate Hold/auth context before allowing another Pay; never expose another account's protected data.
+
+Order `404` is not endpoint-documented. If generic API behavior surfaces it, treat it as terminal context failure, clear sensitive state and invalid Hold/reference, and expose safe recovery rather than a supposedly safe POST retry. Do not invent missing-Order semantics.
+
+### N. Uncertain Order and explicit Tickets recovery
+
+Network failure after dispatch, response-body read failure, malformed/unusable `201`, or unknown `500`/server failure without guaranteed rollback requires `order.phase = "uncertain"`. A received definite rejection is distinct from an ambiguous mutation outcome.
+
+OpenAPI's global error guidance and Assignment require a retry path for server failures such as `500`. However, `POST /orders` has no documented idempotency support or GET Order-by-ID/Hold recovery endpoint. An observed `500`, network failure, or body-read failure does not prove that an Order was not created; repeating POST could create a duplicate purchase. Kino XII explicitly resolves this source tension through project safety policy: the retry requirement is a user-driven flow recovery path, not automatic or direct resubmission of the uncertain mutation.
+
+Show Kino XII project copy:
+
+`We couldn't confirm whether your order was completed.`
+
+Offer `Check my tickets` and `Return to home`. Block normal Pay retry and Back-to-Seats resubmission. Do not show fake failure/success, automatically repeat POST, automatically refund, or DELETE the Hold as if no Order existed. Clear sensitive inputs when the active Checkout is terminally invalidated.
+
+Immediately on entering uncertain, clear the persisted `{ holdId, sessionId }` Hold restoration reference from sessionStorage through the existing storage abstraction. Guarded restoration must never restore that submitted Hold into Checkout and expose fresh Pay while its prior Order outcome remains unresolved. Keep submitted holdId/sessionId only as non-persisted runtime recovery evidence where needed for stale-result/account guards. Persist no uncertain marker, Order request data, or payment data; do not automatically DELETE the Hold or treat its existence as proof that the Order failed.
+
+Once Order has settled into uncertain, the previous Hold is no longer active Checkout authority in the UI. Hide the normal Checkout form, keep Pay unavailable, and stop presenting the Hold countdown as actionable Checkout time. Do not allow restoration of that Hold to re-enter Checkout. If the server-side Hold later expires, remain in Order uncertainty recovery until the user chooses `Check my tickets` or `Return to home`; do not transition back to Seats merely because its timer would have reached zero, and do not interpret expiry as proof of Order failure. This rule applies only after `order.phase` has settled to uncertain. It does not change §P's visible expiry transition for an Order POST that is still pending.
+
+On explicit `Check my tickets`, fetch the current user's factual Orders through `GET /tickets`. Adopt a specific Order as the uncertain submission's result only if a trustworthy Order identifier from the partial response/request context matches exactly. Hold/session/request IDs are not Order identifiers; no request-to-Order association may be invented.
+
+Never match merely by session, seats, contact, or cardLastFour. Without a trustworthy Order ID/reference, show factual account tickets without claiming a specific entry corresponds to the uncertain POST. Absence from `/tickets` does not prove resubmission is safe. No automatic resubmission is permitted from uncertain state. Future backend recovery/idempotency support requires a new verified capability, not a guessed endpoint.
+
+`Return to home` exits uncertainty recovery and navigates Home without claiming Order failure, issuing Order POST, refunding anything, or automatically releasing the submitted Hold. After leaving uncertainty recovery, the user may later start a new booking through the normal Sessions flow. This is a fresh user-initiated booking/hold/order lifecycle, not replay or resubmission of the uncertain POST: retain no prior payment values, restore no previous Hold from storage, replay no prior mutation, and make no claim that the uncertain Order failed. Never automatically recreate/resubmit it or add a special `Retry Order` button that sends the prior payload. These factual recovery/navigation actions and a later explicit new booking are the accepted Checkout retry path for ambiguous outcomes; they provide no exactly-once or safe-retry guarantee for the earlier mutation.
+
+### O. Close without unresolved Order versus pending Close
+
+Without a pending/uncertain Order, Checkout Close is abandonment under D-027: clear sensitive form state and the restoration reference, close promptly, and initiate best-effort captured Hold release when applicable. Preserve existing release-failure/expiry fallback and never release a newer Hold.
+
+While Order POST is pending, Close/Escape/backdrop Close must close UI promptly, clear sensitive payment fields and normal Checkout presentation, and clear its normal active restoration reference so closed Checkout is not restored. Preserve detached non-sensitive request identity in runtime memory until settlement. Do not assume fetch abortion cancels the server mutation and do not automatically DELETE the Hold while Order outcome is unresolved; release could conflict with successful in-flight purchase.
+
+After detached settlement, subject to request/account/auth/Hold guards:
+
+- Definite rejection: best-effort release the still-known live Hold when appropriate; do not reopen closed UI solely for the rejection or claim release succeeded.
+- Valid late `201`: retain only guarded detached purchase evidence for the same account/request; never reopen or mutate a newer booking. Surface one non-sensitive notification `Your order was completed.` with `View my tickets`.
+- Uncertain outcome: do not reopen the closed modal; retain detached uncertainty only for the current tab/account and surface `We couldn't confirm whether your order was completed.` with `Check my tickets`.
+
+The notification/action policy is Kino XII UX, not a verified Figma toast design or a requirement for a new notification dependency. No automatic refund is authorized. Closing an already uncertain outcome likewise does not authorize Hold DELETE or POST retry.
+
+### P. Expiry while Order is unresolved
+
+Run the normal current-Hold visible expiry transition once: invalidate Checkout, clear active Hold authority/reference and seat draft, clear payment fields, stop its timer, return to Seats, refetch the authenticated map, and show `Your hold time expired. Please re-select your seats.` Do not DELETE for expiry.
+
+Preserve detached unresolved Order identity independently of Hold/active operation cleanup; expiry is not proof of rejection. A late valid `201` becomes same-account detached purchase evidence and produces `Your order was completed.` with `View my tickets`; it must not overwrite a newer booking. A late definite rejection cannot resurrect expired Checkout. A late ambiguous result uses the detached uncertainty notification and `Check my tickets`.
+
+### Q. Logout / account change while pending
+
+Logout/account switch clears sensitive local values and removes protected Checkout UI immediately. Preserve only non-sensitive detached request identity sufficient to reject stale writes. Apply the unresolved-Order no-release rule rather than blindly applying Hold-only logout cleanup to its submitted Hold. Logout must not be blocked by settlement.
+
+Never show previous-account Order details or notifications to a different account. Late results cannot populate current-account state or borrow its auth to release an older Hold. Do not persist detached Order results across accounts. Detached notification delivery requires the applicable current-account/auth guards; retaining origin identity is not permission to display protected results after logout.
+
+### R. Successful response validation
+
+Do not accept arbitrary HTTP `201` as confirmation. Validate usable response data sufficient for actual confirmation: reference, paid status, numeric totalPrice, session/movie/venue/hall/format/language context, and a usable tickets array with seatCode, ticketType slug/name, and numeric price. Require usable contact information for displayed contact fields; paidAt and cardLastFour are required only if displayed.
+
+Check request/session/account correspondence under current or detached guards as applicable. Do not fabricate missing values or replace server tickets/prices with local estimates. These are frontend usability checks; they do not claim that the OpenAPI response formally marks every property required. Malformed/unusable `201` goes uncertain, with no automatic POST retry and no fake confirmation.
+
+### S. Current success transition
+
+For a valid CURRENT `201`, adopt returned Order as authority, set `order.phase = "success"`, end active Hold checkout authority, clear the stored Hold reference, stop its timer, clear payment fields, and permanently block duplicate Pay for that instance. Enter Confirmation in the same booking dialog. Detached success follows §§O–Q rather than reopening Confirmation.
+
+Do not DELETE Hold after successful Order. The API describes conversion of a live Hold to a paid Order; its success flow does not require DELETE. Do not depend on, or claim, physical Hold deletion or an undocumented post-purchase Hold representation.
+
+### T. Confirmation visuals and source conflicts
+
+Use GTU connection `link_6ac0b67d4a348191a63166ae0ce0eb57`, editable file `Zeb7RQ8mjGp04YIPde2ud2`, Confirmation `265:3957`, full-page `291:22766`. Keep Confirmation in the same dialog with title `Booking confirmed!` and returned Order reference, movie/session, venue/hall, format/language, tickets/seat codes/types/prices, and totalPrice. No local preview can override them.
+
+Primary action is `View my tickets`; secondary action is `Back to home`. Preserve the top-right Close under existing project modal policy, satisfying Assignment's Close requirement alongside the Figma actions. Do not show timer, booking progress, QR, fake download, full card number, expiry, or CVV.
+
+The verified Figma sentence `Your tickets are ready. We've sent the confirmation to your email.` includes an unsupported delivery claim. Omit the email-delivery sentence/claim; the API supplies no delivery guarantee/status. This is an explicit source conflict resolution, not evidence that delivery happened or failed. Any remaining supporting copy must make no unsupported email claim.
+
+### U. Confirmation actions and minimal My Tickets destination
+
+`Back to home` closes booking, navigates Home, clears transient confirmation, and sends no Hold DELETE. Close clears transient confirmation and closes the dialog without Hold DELETE. `View my tickets` closes the completed flow and navigates to Profile's real My Tickets area; confirmation remains transient and no Hold DELETE is sent.
+
+CHECKPOINT CHECKOUT must enable the minimum real Profile My Tickets navigation/tab/route state required for this action. Fetch `GET /tickets` when that destination is opened and render enough actual Order/ticket information to establish a functional destination according to existing Assignment/Figma facts. Include loading, error, and factual empty states; never substitute fake tickets or a disabled action. Full visual implementation, if materially larger than this handoff, follows in a separate Tickets checkpoint; a minimal accepted destination is permitted here.
+
+Do not implement refunds in CHECKOUT. Do not automatically fetch tickets immediately after purchase solely to populate a speculative cache. The explicit `Check my tickets` recovery action opens the same factual destination and fetches there under current-account guards. Recovery/navigation actions do not resubmit Orders.
+
+### V. Confirmation refresh and storage boundaries
+
+Do not add Checkout/Order persistence. Existing Hold storage remains the exact minimal sessionStorage `{ holdId, sessionId }` through its abstraction. Success clears that reference. No buyer/payment/Order draft, confirmation result, detached result, or uncertain request marker is persisted.
+
+Refreshing after success may leave the user outside transient Confirmation; factual purchases remain recoverable through My Tickets / `GET /tickets`. Payment data never survives refresh. Existing guarded Hold restoration remains unchanged where applicable, but a restored Hold cannot prove whether an earlier lost Order response represented success. Refresh loses in-memory detached request/uncertainty tracking; this policy does not promise cross-refresh exactly-once protection or authorize automatic Order replay after restoration.
+
+### W. Checkout geometry and progress resolution
+
+Use the completed audit's composed full-page filled Checkout `291:22284` as the primary desktop reference; supporting Checkout nodes are `265:3953`, `265:3955`, and empty full-page `291:21718`. This is project presentation policy resolving conflicting variants, not a claim that their geometry is identical.
+
+| Element | Accepted desktop reference |
+| --- | --- |
+| Dialog / body | 1146×599 / 1082×452 |
+| Form / summary columns | 720 / 321 |
+| Divider / surrounding gaps | 1px / 20px each side |
+| Progress | 720×33; Checkout active |
+| Input | 40px high; radius 12 |
+| Field vertical gap | 24px |
+| Paired fields | 354 + 12px gap + 354 |
+| Summary purchase CTA | 321×41 |
+| Timer | 102×46 |
+
+Use consistent empty/filled layout geometry where practical, rather than shifting modal height as values change. Do not use the empty mock's larger 44px controls when they cause layout shift. Preserve necessary accessible error/control reachability rather than clipping content to force sample height. Existing desktop/overflow policy remains applicable.
+
+The standalone Checkout components highlight Seats while both composed full-page references use Checkout progress. Preserve D-027's Checkout-active requirement and composed reference; do not reproduce the standalone incorrect step state.
+
+### X. Back placement and purchase presentation
+
+Figma establishes no Checkout Back control. Add the project-required Back as a secondary control in the left/form-column footer, aligned consistently. Keep it outside the payment-summary CTA area and preserve the 321px summary CTA. This placement is Kino XII policy, not a guessed Figma measurement.
+
+Use §H's Assignment-required CTA, readiness gating, and pending copy; do not infer enablement from the filled sample. New pending/recovery treatments compose existing project visuals and must be identified as policy fallbacks when no exact Figma state exists.
+
+### Y. Accessibility and focus
+
+Use a semantic form, associated labels, visible focus, field-error associations and `aria-invalid`, first invalid input focus after failed submit, pending `aria-busy`, and status/error feedback with no sensitive values. Confirmation title receives focus when success replaces the form. Expiry focuses the Seats recovery context; uncertain state focuses its recovery heading/action. Do not let asynchronous callbacks steal focus from a newer booking/account.
+
+Close remains keyboard-accessible; Escape/backdrop follow current modal behavior and the pending detached policy. Timer retains `role="timer"` and `aria-live="off"`; announce expiry separately without per-second announcements.
+
+Recommended autocomplete values may be used: `name`, `email`, `tel-national`, `cc-number`, `cc-exp`, and `cc-csc`. Use text inputs where leading zeros/formatted values matter and appropriate inputMode hints without introducing extra validation rules. These attribute choices are accessibility implementation guidance, not API/Figma facts.
+
+### Z. Minimal shared Order state
+
+Accept shared lifecycle state:
+
+```js
+order: {
+  phase: "idle", // idle | submitting | success | error | uncertain
+  data: null,
+  feedback: null
+}
+```
+
+`order.data` contains the returned Order only. Do not duplicate authoritative total, tickets, reference, session, or contact outside it. Definite rejection uses error; uncertain outcome uses uncertain, not a guessed rejection. Form values/payment-field errors remain local. Detached pending request identity belongs to runtime/coordinator memory, not reducer persistence, and remains distinct from a newer active booking's Order state.
+
+### Backend ambiguity disclaimer
+
+The frontend does not claim Order idempotency, exactly-once purchase semantics, network failure means no Order was created, `500` means rollback, fetch abort cancels the server mutation, failed Order preserves the Hold, successful Order physically deletes the Hold, `/tickets` absence proves safe retry, or automatic refund is authorized. These guarantees are unconfirmed.
+
+No frontend decision can supply absent backend transactional guarantees. Use explicit uncertainty, factual Tickets recovery, guarded detached handling, and no automatic ambiguous POST retry. Accepted definite-401 continuation is scoped to the received rejection, not ambiguous transport outcomes.
+
+### Async safety
+
+Guard every Order result/callback with applicable submit request identity, booking instance, account ID, auth/token generation, session ID, and submitted Hold ID. Separate active-state adoption from detached handling. Settlement cannot clear another request's lock, reopen old Checkout, overwrite newer booking, leak purchases across accounts, repeat a mutation, or release/delete a newer Hold.
+
+Detached late results may only produce the accepted non-sensitive notification/action for the eligible current account, with protected purchase evidence isolated from another account's active state. Do not borrow newer account authentication for cleanup. Hold expiry/Close cleanup must not erase unresolved Order identity.
+
+### Source attribution
+
+`Completing your order…`, `Completing order…`, `We couldn't confirm whether your order was completed.`, and `Your order was completed.` are Kino XII project UX strings. Uncertain recovery actions, detached-result notification, current-month expiry interpretation, Back placement, input geometry reconciliation, pending controls, and explicit payment re-entry after Order 401 are project policies. Do not present them as OpenAPI guarantees or exact Figma states.
+
+### Reason
+
+Order creation is an irreversible/high-value booking mutation even though this API simulates payment. There is no documented idempotency or direct Order recovery by Hold. Payment values require stricter local-state boundaries, Checkout Figma variants conflict, and pending/uncertain/success navigation needs deterministic frontend behavior. The purchase and recovery actions also require a functional My Tickets destination. Resolve these choices before implementation while preserving source authority and the completed HOLD lifecycle.
+
+### Affected
+
+- booking API module
+- booking runtime/provider/reducer and guarded detached request handling
+- Order operations/lifecycle helpers
+- local Checkout form and validation
+- confirmation rendering/actions
+- minimal Profile My Tickets handoff and factual GET `/tickets` reads
+- booking CSS and accessible focus/status behavior
+- focused lifecycle/rendering tests and deterministic intercepted browser QA
+
+No dependency requirement is implied. This decision documents policy only: it implements no src/CSS/assets/dependency changes, modifies no architecture document, sends no production mutation, and leaves D-001 through D-027 unchanged. Full Tickets visuals/refunds remain a separate checkpoint beyond the accepted minimal handoff.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
