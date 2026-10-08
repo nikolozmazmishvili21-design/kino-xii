@@ -2,8 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext.js";
 import { useProfileAccess } from "../auth/ProfileAccessContext.js";
 import { getTickets } from "../api/ticketsApi.js";
-import { ApiError } from "../api/client.js";
-import { readableOrder } from "../booking/orderLifecycle.js";
+import { groupTicketOrders } from "./ticketGroups.js";
 
 export default function useTickets(consumeRecovery) {
   const { status, mutation, user: observedUser, isCurrentUser } = useAuth();
@@ -23,8 +22,8 @@ export default function useTickets(consumeRecovery) {
     const current = () => active && !controller.signal.aborted && isCurrentUser(user);
     getTickets({ signal: controller.signal }).then((data) => {
       if (!current()) return;
-      if (!data.every((order) => readableOrder(order))) throw new ApiError("The tickets response could not be read.");
-      setRead({ owner: user, attempt, status: data.length ? "success" : "empty", data, error: null, identity: recovery.current?.identity ?? null });
+      const groups = groupTicketOrders(data);
+      setRead({ owner: user, attempt, status: data.length ? "success" : "empty", data, groups, error: null, identity: recovery.current?.identity ?? null });
     }).catch((error) => {
       if (!current() || error.name === "AbortError") return;
       if (error.status === 401) {
@@ -39,5 +38,5 @@ export default function useTickets(consumeRecovery) {
   // previous-account Orders are ever exposed during auth or User replacement.
   if (!user) return { status: "unauthenticated", data: [], error: null, retry };
   if (read.owner !== user || read.attempt !== attempt) return { status: "loading", data: [], error: null, retry };
-  return { status: read.status, data: read.data, error: read.error, identity: read.identity, retry };
+  return { status: read.status, data: read.data, groups: read.groups, error: read.error, identity: read.identity, retry };
 }

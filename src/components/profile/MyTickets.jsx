@@ -1,23 +1,20 @@
-import { useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { ROUTES, ticketsGroup, ticketsGroupSearch } from "../../routing/routes.js";
+import { findRecoveredOrder, groupTicketOrders } from "../../tickets/ticketGroups.js";
 import { useBooking } from "../../booking/BookingContext.js";
 import useTickets from "../../tickets/useTickets.js";
 import { formatGEL } from "../../booking/seatSelection.js";
 import { formatMovieDate } from "../../movie-detail/movieDetailPresentation.js";
 import MovieImage from "../home/MovieImage.jsx";
 
-function matches(order, identity) {
-  const fields = Object.entries(identity ?? {}).filter(([field]) => field === "id" || field === "reference");
-  return fields.length > 0 && fields.every(([field, value]) => order[field] === value);
-}
-
-function TicketOrder({ order, recovered }) {
-  const id = useId(), element = useRef(null), focused = useRef(false);
+function TicketOrder({ order, recovered, claimRecoveryFocus }) {
+  const id = useId(), element = useRef(null);
   useEffect(() => {
-    if (recovered && !focused.current && element.current?.isConnected) {
-      focused.current = true;
+    if (recovered && element.current?.isConnected && claimRecoveryFocus(order.reference)) {
       element.current.focus();
     }
-  }, [recovered]);
+  }, [recovered, claimRecoveryFocus, order.reference]);
   const { session } = order;
   const poster = typeof session.movie.posterUrl === "string" && session.movie.posterUrl.trim() ? session.movie.posterUrl : null;
   return <article ref={element} tabIndex={-1} className={`my-tickets__order${recovered ? " my-tickets__order--recovered" : ""}`} aria-labelledby={`${id}-title ${id}-reference`}>
@@ -43,19 +40,63 @@ function TicketOrder({ order, recovered }) {
   </article>;
 }
 
-export function TicketsContent({ read, identity = null }) {
-  return <section className="my-tickets" aria-labelledby="my-tickets-title">
-    <h2 id="my-tickets-title" className="visually-hidden">My Tickets</h2>
-    {read.status === "loading" && <p role="status">Loading your tickets…</p>}
-    {read.status === "unauthenticated" && <p role="status">Please sign in to view your tickets.</p>}
-    {read.status === "empty" && <p>No tickets yet.</p>}
-    {read.status === "error" && <div className="my-tickets__error"><p role="alert">{read.error}</p><button type="button" className="button button--secondary" onClick={read.retry}>Retry tickets</button></div>}
-    {read.status === "success" && read.data.map((order, index) => <TicketOrder key={index} order={order} recovered={matches(order, identity)} />)}
+const GROUPS = [{ value: "upcoming", label: "Upcoming" }, { value: "past", label: "Past" }];
+
+export function TicketsContent({ read, identity = null, group = "upcoming", onSelectGroup }) {
+  const id = useId(), tabs = useRef({}), focusedRecovery = useRef(null);
+  const ready = read.status === "success" || read.status === "empty";
+  const groups = ready ? read.groups ?? groupTicketOrders(read.data ?? []) : null;
+  const orders = groups?.[group] ?? [];
+  const recovered = ready ? findRecoveredOrder(read.data ?? [], identity) : null;
+  const claimRecoveryFocus = useCallback((reference) => {
+    const key = JSON.stringify([identity, reference]);
+    if (focusedRecovery.current === key) return false;
+    focusedRecovery.current = key;
+    return true;
+  }, [identity]);
+  const select = (value) => onSelectGroup?.(value);
+  function navigateTabs(event) {
+    const next = event.key === "ArrowLeft" || event.key === "ArrowRight" ? (group === "upcoming" ? "past" : "upcoming")
+      : event.key === "Home" ? "upcoming" : event.key === "End" ? "past" : null;
+    if (!next) return;
+    event.preventDefault();
+    select(next);
+    tabs.current[next]?.focus();
+  }
+  const recoveredGroup = recovered ? (recovered.isUpcoming ? "upcoming" : "past") : null;
+  return <section className="my-tickets" aria-labelledby={id + "-title"}>
+    <h2 id={id + "-title"} className="visually-hidden">My Tickets</h2>
+    <div className="my-tickets__tabs" role="tablist" aria-label="Ticket groups" onKeyDown={navigateTabs}>
+      {GROUPS.map(({ value, label }) => <button key={value} ref={(element) => { tabs.current[value] = element; }}
+        id={id + "-tab-" + value} type="button" role="tab" aria-selected={group === value}
+        aria-controls={id + "-panel"} tabIndex={group === value ? 0 : -1} onClick={() => select(value)}>
+        <span>{label}</span><span className="my-tickets__count">{groups ? groups[value].length : "—"}</span>
+      </button>)}
+    </div>
+    <div id={id + "-panel"} className="my-tickets__panel" role="tabpanel" aria-labelledby={id + "-tab-" + group} aria-busy={read.status === "loading"} tabIndex={0}>
+      {read.status === "loading" && <p role="status">Loading your tickets…</p>}
+      {read.status === "unauthenticated" && <p role="status">Please sign in to view your tickets.</p>}
+      {read.status === "error" && <div className="my-tickets__error"><p role="alert">{read.error}</p><button type="button" className="button button--secondary" onClick={read.retry}>Retry tickets</button></div>}
+      {ready && !orders.length && <div className="my-tickets__empty">
+        <p>{group === "upcoming" ? "No upcoming tickets yet." : "No past tickets yet."}</p>
+        {group === "upcoming" ? <Link to={ROUTES.sessions}>Browse sessions</Link> : <p>Completed and refunded orders will appear here.</p>}
+      </div>}
+      {recoveredGroup && recoveredGroup !== group && <div className="my-tickets__recovery" role="status">
+        <p>The order matching your recovery details is in {recoveredGroup === "past" ? "Past" : "Upcoming"}.</p>
+        <button type="button" className="button button--secondary" onClick={() => select(recoveredGroup)}>View matching order in {recoveredGroup === "past" ? "Past" : "Upcoming"}</button>
+      </div>}
+      {orders.map((order) => <TicketOrder key={order.reference} order={order} recovered={order === recovered} claimRecoveryFocus={claimRecoveryFocus} />)}
+    </div>
   </section>;
 }
 
 export default function MyTickets() {
   const { consumeTicketsRecovery } = useBooking();
   const read = useTickets(consumeTicketsRecovery);
-  return <TicketsContent read={read} identity={read.identity} />;
+  const [search, setSearch] = useSearchParams();
+  const group = ticketsGroup(search);
+  const selectGroup = (value) => {
+    if (value !== group) setSearch((current) => ticketsGroupSearch(current, value));
+  };
+  return <TicketsContent read={read} identity={read.identity} group={group} onSelectGroup={selectGroup} />;
 }

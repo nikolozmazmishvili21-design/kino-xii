@@ -16,12 +16,12 @@ const session = { id: 10, price: 19, date: "2026-10-07", time: "19:30", movie: {
   venue: user.preferredVenue, hall: { id: 1, name: "B" }, format: { name: "Standard" }, language: { name: "Georgian" } };
 const HOLD = "11111111-2222-3333-4444-555555555555";
 const NEW_HOLD = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-const serverOrder = { id: 7, reference: "SYNTHETIC-ORDER", status: "paid", totalPrice: 87.65, cardLastFour: "9876", contact: user,
+const serverOrder = { id: 7, reference: "SYNTHETIC-ORDER", status: "paid", isUpcoming: true, isRefundable: true, totalPrice: 87.65, cardLastFour: "9876", contact: user,
   session: { ...session, date: "2026-10-08", time: "21:45", movie: { title: "Returned Film", posterUrl: "/src/assets/images/navbar-background.png" },
     venue: { name: "Returned Venue" }, hall: { name: "Returned Hall" }, format: { name: "Returned Format" }, language: { name: "Returned Language" } },
   tickets: [{ seatCode: "Z9", ticketType: { slug: "student", name: "Returned Student" }, price: 11.27 },
     { seatCode: "Z2", ticketType: { slug: "child", name: "Returned Child" }, price: 6.08 }] };
-const returnedTickets = [serverOrder, { ...serverOrder, id: 8, reference: "SYNTHETIC-REFUNDED", status: "refunded" }];
+const returnedTickets = [serverOrder, { ...serverOrder, id: 8, reference: "SYNTHETIC-REFUNDED", status: "refunded", isUpcoming: false, isRefundable: false }];
 let server, origin;
 before(async () => {
   if (!endpoint) return;
@@ -429,21 +429,21 @@ rendered("Tickets URL/direct entry, Profile links, Back/Forward/reload and dropd
     await h.browser.wait("document.querySelector('.profile-form')"); assert.equal(h.calls.tickets, 0);
     await h.edit("fullName", "Unsaved Profile Edit");
     await h.browser.evaluate("document.querySelector('.profile-page__navigation a[href=\"/profile?tab=tickets\"]').click()");
-    await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 2");
+    await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 1");
     assert.equal(await h.browser.evaluate("document.querySelector('.profile-page__navigation [aria-current=page]').textContent"), "My Tickets");
     assert.equal(await h.browser.evaluate("document.querySelector('.profile-page__column').hidden && document.querySelector('.profile-form [name=fullName]').value === 'Unsaved Profile Edit'"), true);
     assert.equal(h.calls.tickets, 1); assert.deepEqual(h.calls.ticketQueries, [""]);
     const text = await h.browser.evaluate("document.querySelector('.my-tickets').textContent");
-    for (const value of ["SYNTHETIC-ORDER", "SYNTHETIC-REFUNDED", "Paid", "Refunded", "Returned Film", "Returned Venue", "Returned Hall", "Returned Format", "Returned Language", "Z9", "Z2", "₾ 11.27", "₾ 6.08", "₾ 87.65"]) assert.ok(text.includes(value), value);
+    for (const value of ["SYNTHETIC-ORDER", "Paid", "Returned Film", "Returned Venue", "Returned Hall", "Returned Format", "Returned Language", "Z9", "Z2", "₾ 11.27", "₾ 6.08", "₾ 87.65"]) assert.ok(text.includes(value), value);
     assert.doesNotMatch(text, /Fixture Film|100\.47|9876|buyer@example|Download|QR/);
-    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets button').length"), 0);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets [role=tab]').length"), 2);
     const screenshot = await h.browser.send("Page.captureScreenshot", { format: "png" });
     await writeFile("node_modules/.cache/kino-checkout-browser/tickets-desktop.png", Buffer.from(screenshot.data, "base64"));
     await h.browser.evaluate("history.back()"); await h.browser.wait("!document.querySelector('.profile-page__column').hidden");
     assert.equal(await h.browser.evaluate("document.querySelector('.profile-form [name=fullName]').value"), "Unsaved Profile Edit");
-    await h.browser.evaluate("history.forward()"); await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 2"); assert.equal(h.calls.tickets, 2);
+    await h.browser.evaluate("history.forward()"); await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 1"); assert.equal(h.calls.tickets, 2);
     await h.browser.evaluate("window.ticketsReloadMarker = true"); await h.browser.send("Page.reload", { ignoreCache: true });
-    await h.browser.wait("!window.ticketsReloadMarker && document.querySelectorAll('.my-tickets__order').length === 2"); assert.equal(h.calls.tickets, 3);
+    await h.browser.wait("!window.ticketsReloadMarker && document.querySelectorAll('.my-tickets__order').length === 1"); assert.equal(h.calls.tickets, 3);
     await h.browser.evaluate("document.querySelector('.profile-page__navigation a[href=\"/profile\"]').click()"); await h.browser.wait("!document.querySelector('.my-tickets')");
     await h.browser.evaluate("document.querySelector('.profile-dropdown__toggle').click()"); await h.browser.wait("document.querySelector('.profile-dropdown__panel a[href=\"/profile?tab=tickets\"]')");
     await h.browser.evaluate("document.querySelector('.profile-dropdown__panel a[href=\"/profile?tab=tickets\"]').click()"); await h.browser.wait("document.querySelector('.my-tickets__order')");
@@ -459,13 +459,13 @@ rendered("Tickets loading, empty, malformed envelope/item, server/network error 
       if (reply.network) await h.failTickets();
       else await h.finishTickets(reply.body, reply.status);
       if (reply.body?.data?.length === 0) {
-        await h.browser.wait("document.querySelector('.my-tickets')?.textContent.includes('No tickets yet.')");
+        await h.browser.wait("document.querySelector('.my-tickets')?.textContent.includes('No upcoming tickets yet.')");
         await h.capture("tickets-empty-desktop");
-        assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.my-tickets button, .my-tickets__order'))"), false);
+        assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.my-tickets__panel button, .my-tickets__order'))"), false);
       } else {
         await h.browser.wait("document.querySelector('.my-tickets__error button')"); assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order').length"), 0);
         await h.browser.evaluate("document.querySelector('.my-tickets__error button').click()"); await h.waitTickets(); await h.finishTickets();
-        await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 2");
+        await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 1");
       }
       assert.equal(h.calls.orders, 0); assert.equal(h.calls.deletes, 0); assert.ok(h.calls.ticketQueries.every(query => query === "")); await h.safe();
     } finally { await h.close(); }
@@ -478,7 +478,7 @@ rendered("exact uncertain recovery focuses its returned Order; unmatched and nul
     try {
       await h.pay(); await h.settle(identity ? 201 : 500, identity ? { data: identity } : { message: "Unknown outcome" });
       await h.browser.wait("document.querySelector('.order-recovery')");
-      await h.browser.evaluate("document.querySelector('.order-recovery .button--primary').click()"); await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 2");
+      await h.browser.evaluate("document.querySelector('.order-recovery .button--primary').click()"); await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 1");
       const match = identity && identity.reference === "SYNTHETIC-ORDER";
       assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.my-tickets__order--recovered'))"), Boolean(match));
       if (match) assert.equal(await h.browser.evaluate("document.activeElement.classList.contains('my-tickets__order--recovered')"), true);
@@ -499,7 +499,7 @@ rendered("Tickets GET 401 uses existing Login, clears old Orders and refetches a
     assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order').length"), 0);
     assert.equal(await h.browser.evaluate("location.search"), "?tab=tickets");
     await h.browser.evaluate("window.profileQa.login({email:'buyer@example.test',password:'fixture-only-password'})"); await h.waitTickets(); await h.finishTickets();
-    await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 2 && !document.querySelector('.auth-modal')");
+    await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 1 && !document.querySelector('.auth-modal')");
     assert.equal(h.calls.tickets, 2); assert.equal(h.calls.orders, 0); assert.equal(h.calls.deletes, 0); await h.safe();
   } finally { await h.close(); }
 });
@@ -631,7 +631,7 @@ rendered("keyboard booking, validation, pending Close, Confirmation focus and Ti
     await h.browser.evaluate("document.querySelector('.profile-page__navigation a[href=\"/profile\"]').focus()"); await key("Enter"); await h.browser.wait("!document.querySelector('.my-tickets')");
     h.replyTickets({ message: "Fixture Tickets read error" }, 500);
     await h.browser.evaluate("document.querySelector('.profile-page__navigation a[href=\"/profile?tab=tickets\"]').focus()"); await key("Enter"); await h.browser.wait("document.querySelector('.my-tickets__error button')");
-    await key("Tab"); assert.equal(await h.browser.evaluate("document.activeElement.textContent"), "Retry tickets"); await key("Enter"); await h.browser.wait("document.querySelector('.my-tickets__order')");
+    await h.browser.evaluate("document.querySelector('.my-tickets [role=tab][aria-selected=true]').focus()"); await key("Tab"); await key("Tab"); assert.equal(await h.browser.evaluate("document.activeElement.textContent"), "Retry tickets"); await key("Enter"); await h.browser.wait("document.querySelector('.my-tickets__order')");
     assert.equal(h.calls.orders, 1); assert.equal(h.calls.deletes, 0); await h.safe();
   } finally { await h.close(); }
   // Check inherited focus-visible after keyboard interaction in a current flow.
@@ -701,5 +701,149 @@ rendered("leaving Tickets aborts its read; a later entry owns data and ignores t
     await h.finishTickets({ data: [{ ...serverOrder, reference: "STALE-READ" }] });
     assert.doesNotMatch(await h.browser.evaluate("document.querySelector('.my-tickets').textContent"), /STALE-READ/);
     assert.equal(h.calls.tickets, 2); assert.equal(h.calls.orders, 0); assert.equal(h.calls.deletes, 0);
+  } finally { await h.close(); }
+});
+
+
+rendered("Stage A tabs use live counts, server grouping/order and both verified visual states", async () => {
+  const first = { ...serverOrder, reference: "UPCOMING-FIRST", session: { ...serverOrder.session, date: "2000-01-01" } };
+  const second = { ...serverOrder, id: 9, reference: "UPCOMING-SECOND" };
+  const refunded = { ...returnedTickets[1], session: { ...serverOrder.session, date: "2099-01-01" } };
+  const past = { ...serverOrder, id: 10, reference: "PAID-PAST", isUpcoming: false };
+  const h = await fixture({ checkout: false, path: "profile?tab=tickets&keep=preserved", ticketReplies: [{ status: 200, body: { data: [refunded, first, past, second] } }] });
+  try {
+    await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 2");
+    assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__count')].map(e=>e.textContent)"), ["2", "2"]);
+    assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__stub > div:first-child p')].map(e=>e.textContent)"), ["#UPCOMING-FIRST", "#UPCOMING-SECOND"]);
+    const styles = await h.browser.evaluate("(() => {const tabs=document.querySelector('.my-tickets__tabs'), active=tabs.querySelector('[aria-selected=true]'), count=active.querySelector('.my-tickets__count');const a=getComputedStyle(active),t=getComputedStyle(tabs),c=getComputedStyle(count);return {padding:t.padding,radius:t.borderRadius,fill:t.backgroundColor,activePadding:a.padding,activeRadius:a.borderRadius,activeFill:a.backgroundColor,font:a.fontSize,weight:a.fontWeight,gap:a.gap,countFont:c.fontSize};})()");
+    assert.deepEqual(styles, { padding: "5px", radius: "12px", fill: "rgb(30, 32, 49)", activePadding: "7px 14px", activeRadius: "10px", activeFill: "rgb(42, 44, 61)", font: "14px", weight: "600", gap: "8px", countFont: "12px" });
+    await h.capture("stage-a-upcoming-desktop");
+    await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').click()");
+    await h.browser.wait("new URLSearchParams(location.search).get('filter') === 'past'");
+    assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__stub > div:first-child p')].map(e=>e.textContent)"), ["#SYNTHETIC-REFUNDED", "#PAID-PAST"]);
+    assert.equal(await h.browser.evaluate("new URLSearchParams(location.search).get('keep')"), "preserved");
+    assert.equal(await h.browser.evaluate("document.querySelector('[role=tabpanel]').getAttribute('aria-labelledby') === document.querySelector('[role=tab][aria-selected=true]').id"), true);
+    await h.capture("stage-a-past-desktop");
+    await h.browser.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await h.browser.evaluate("document.querySelector('.my-tickets__tabs').scrollWidth <= document.querySelector('.my-tickets__tabs').clientWidth"), true);
+    await h.capture("stage-a-past-narrow");
+    assert.equal(h.calls.tickets, 1); assert.deepEqual(h.calls.ticketQueries, [""]); assert.equal(h.calls.orders, 0);
+  } finally { await h.close(); }
+});
+
+rendered("Stage A URL history/reload, invalid fallback, keyboard selection and Profile drafts remain coherent", async () => {
+  const h = await fixture({ checkout: false, path: "profile?keep=1" });
+  try {
+    await h.browser.wait("document.querySelector('.profile-form')"); await h.edit("fullName", "Retained Stage A Draft");
+    await h.browser.evaluate("document.querySelector('.profile-page__navigation a[href=\"/profile?tab=tickets\"]').click()");
+    await h.browser.wait("document.querySelector('.my-tickets__order')");
+    await h.browser.evaluate("document.querySelector('.my-tickets [aria-selected=true]').focus()");
+    const key = async (value) => { await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: value }); await h.browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: value }); };
+    await key("ArrowRight"); await h.browser.wait("new URLSearchParams(location.search).get('filter') === 'past' && document.activeElement.getAttribute('aria-selected') === 'true'");
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('aria-selected')"), "true");
+    assert.equal(await h.browser.evaluate("getComputedStyle(document.activeElement).outlineStyle"), "solid");
+    assert.equal(await h.browser.evaluate("document.querySelector('.profile-form [name=fullName]').value"), "Retained Stage A Draft");
+    await key("Home"); await h.browser.wait("new URLSearchParams(location.search).get('filter') === 'upcoming' && document.querySelector('.my-tickets [id$=\"-tab-upcoming\"]').getAttribute('aria-selected') === 'true'");
+    await h.browser.evaluate("history.back()"); await h.browser.wait("document.querySelector('.my-tickets [id$=\"-tab-past\"]').getAttribute('aria-selected') === 'true'");
+    await h.browser.evaluate("history.forward()"); await h.browser.wait("document.querySelector('.my-tickets [id$=\"-tab-upcoming\"]').getAttribute('aria-selected') === 'true'");
+    assert.equal(h.calls.tickets, 1);
+    await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').focus()"); await key("End"); await key("Enter");
+    await h.browser.wait("new URLSearchParams(location.search).get('filter') === 'past'");
+    await h.browser.send("Page.reload", { ignoreCache: true });
+    await h.browser.wait("document.querySelector('.my-tickets__order') && document.querySelector('.my-tickets [id$=\"-tab-past\"]').getAttribute('aria-selected') === 'true'");
+    assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__panel').textContent"), /SYNTHETIC-REFUNDED/);
+    assert.equal(h.calls.tickets, 2);
+    await h.browser.send("Page.navigate", { url: origin + "profile?tab=tickets&filter=invalid&keep=1" });
+    await h.browser.wait("document.querySelector('.my-tickets__order') && document.querySelector('.my-tickets [id$=\"-tab-upcoming\"]').getAttribute('aria-selected') === 'true'");
+    assert.equal(await h.browser.evaluate("new URLSearchParams(location.search).get('filter')"), "invalid");
+    assert.equal(h.calls.tickets, 3); assert.ok(h.calls.ticketQueries.every(query => query === ""));
+  } finally { await h.close(); }
+});
+
+rendered("Stage A empty states and counts describe the selected group without hiding the other group", async () => {
+  for (const group of ["upcoming", "past"]) {
+    const data = group === "upcoming" ? [returnedTickets[1]] : [serverOrder];
+    const h = await fixture({ checkout: false, path: "profile?tab=tickets&filter=" + group, ticketReplies: [{ status: 200, body: { data } }] });
+    try {
+      await h.browser.wait("document.querySelector('.my-tickets__empty')");
+      assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__empty').textContent"), new RegExp("No " + group + " tickets yet"));
+      assert.equal(await h.browser.evaluate("document.querySelector('[role=tab][aria-selected=true] .my-tickets__count').textContent"), "0");
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order').length"), 0);
+      await h.browser.evaluate("document.querySelector('.my-tickets [role=tab][aria-selected=false]').click()");
+      await h.browser.wait("document.querySelector('.my-tickets__order')"); assert.equal(h.calls.tickets, 1);
+      assert.equal(await h.browser.evaluate("document.querySelector('[role=tab][aria-selected=true] .my-tickets__count').textContent"), "1");
+    } finally { await h.close(); }
+  }
+});
+
+rendered("Stage A malformed grouping stays a read error and retry uses the latest selected URL group", async () => {
+  for (const data of [[{ ...serverOrder, isUpcoming: undefined }], [{ ...serverOrder, isUpcoming: "true" }],
+    [{ ...returnedTickets[1], isUpcoming: true }], [serverOrder, { ...serverOrder }]]) {
+    const h = await fixture({ checkout: false, path: "profile?tab=tickets", ticketsPaused: true });
+    try {
+      await h.waitTickets(); await h.finishTickets({ data }); await h.browser.wait("document.querySelector('.my-tickets__error')");
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order').length"), 0);
+      assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__count')].map(e=>e.textContent)"), ["—", "—"]);
+      await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').click(); document.querySelector('.my-tickets__error button').click()");
+      await h.waitTickets(); await h.finishTickets(); await h.browser.wait("document.querySelector('.my-tickets__order')");
+      assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__panel').textContent"), /SYNTHETIC-REFUNDED/);
+      assert.equal(h.calls.tickets, 2); assert.ok(h.calls.ticketQueries.every(query => query === ""));
+    } finally { await h.close(); }
+  }
+});
+
+rendered("Stage A pending group changes reuse one read and stale 401 cannot expire a newer account", async () => {
+  const h = await fixture({ checkout: false, path: "profile?tab=tickets", ticketsPaused: true });
+  try {
+    await h.waitTickets(); await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').click()");
+    assert.equal(h.calls.tickets, 1);
+    await h.replaceAccount(); await h.waitTickets(2);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order').length"), 0);
+    assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__count')].map(e=>e.textContent)"), ["—", "—"]);
+    await h.finishTickets({ data: [{ ...returnedTickets[1], reference: "ACCOUNT-B-PAST" }] }, 200, 1);
+    await h.browser.wait("document.querySelector('.my-tickets__panel').textContent.includes('ACCOUNT-B-PAST')");
+    await h.finishTickets({ message: "Stale account A auth failure" }, 401);
+    await h.browser.evaluate("new Promise(resolve => setTimeout(resolve, 80))");
+    assert.equal(await h.browser.evaluate("JSON.parse(document.getElementById('auth-probe').textContent).status"), "authenticated");
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.doesNotMatch(await h.browser.evaluate("document.querySelector('.my-tickets__panel').textContent"), /SYNTHETIC-ORDER|Stale account/);
+    assert.equal(await h.browser.evaluate("new URLSearchParams(location.search).get('filter')"), "past");
+    assert.equal(h.calls.tickets, 2); assert.equal(h.calls.orders, 0);
+  } finally { await h.close(); }
+});
+
+rendered("Stage A a matching Past recovery is explicitly revealable and receives focus only once", async () => {
+  const h = await fixture();
+  try {
+    await h.pay(); await h.settle(201, { data: { id: 8, reference: "SYNTHETIC-REFUNDED" } });
+    await h.browser.wait("document.querySelector('.order-recovery')");
+    await h.browser.evaluate("document.querySelector('.order-recovery .button--primary').click()");
+    await h.browser.wait("document.querySelector('.my-tickets__recovery button')");
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.my-tickets__order--recovered'))"), false);
+    await h.browser.evaluate("document.querySelector('.my-tickets__recovery button').click()");
+    await h.browser.wait("document.activeElement.classList.contains('my-tickets__order--recovered')");
+    assert.match(await h.browser.evaluate("document.activeElement.textContent"), /SYNTHETIC-REFUNDED/);
+    await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-upcoming\"]').click()");
+    await h.browser.wait("document.querySelector('.my-tickets [id$=\"-tab-upcoming\"]').getAttribute('aria-selected') === 'true'");
+    await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').focus(); document.querySelector('.my-tickets [id$=\"-tab-past\"]').click()");
+    await h.browser.wait("document.querySelector('.my-tickets__order--recovered')");
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('role')"), "tab");
+    assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 1); assert.equal(h.calls.deletes, 0);
+  } finally { await h.close(); }
+});
+
+rendered("Stage A stable Order references retain card instances when server-list order changes", async () => {
+  const h = await fixture({ checkout: false, path: "profile?tab=tickets" });
+  try {
+    await h.browser.wait("document.querySelector('.my-tickets__order')");
+    const data = [serverOrder, { ...serverOrder, id: 9, reference: "SECOND-KEY" }];
+    await h.browser.evaluate("(async()=>{const root=document.createElement('div');root.id='tickets-key-fixture';document.body.append(root);window.ticketsFixtureOrders=" + JSON.stringify(data) + ";await import('/tests/fixtures/ticketsHarness.jsx');})()");
+    await h.browser.wait("window.ticketsRenderingQa && document.querySelectorAll('#tickets-key-fixture article').length === 2");
+    await h.browser.evaluate("window.originalFirstCard=document.querySelector('#tickets-key-fixture article');window.originalSecondCard=document.querySelectorAll('#tickets-key-fixture article')[1];document.querySelector('#tickets-key-fixture [role=tab]').focus();window.ticketsRenderingQa.setOrders(" + JSON.stringify([...data].reverse()) + ")");
+    await h.browser.wait("document.querySelector('#tickets-key-fixture article').textContent.includes('SECOND-KEY')");
+    assert.equal(await h.browser.evaluate("document.querySelector('#tickets-key-fixture article') === window.originalSecondCard && document.querySelectorAll('#tickets-key-fixture article')[1] === window.originalFirstCard"), true);
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('role')"), "tab");
+    await h.browser.evaluate("window.disposeTicketsRendering();document.getElementById('tickets-key-fixture').remove()");
+    assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 0);
   } finally { await h.close(); }
 });
