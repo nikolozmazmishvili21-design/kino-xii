@@ -90,3 +90,47 @@ test("each group has a factual empty state and recovery can reveal a matching hi
   const loading = render({ status: "loading" }, null, "past");
   assert.doesNotMatch(loading, /my-tickets__count">0/); assert.match(loading, /aria-busy="true"/);
 });
+
+test("Tickets uses available server age rating/runtime, poster alt and Figma seat content without invented defaults", () => {
+  const value = order("ACTUAL-FIELDS");
+  value.session.movie = { title: "Server Film", posterUrl: "/server-poster.jpg", ageRating: { code: "16+", description: "Server rating description" }, runtimeMinutes: 143 };
+  const html = render({ status: "success", data: [value] });
+  assert.match(html, /src="\/server-poster.jpg" alt="Server Film poster"/);
+  assert.match(html, /title="Server rating description"/);
+  assert.match(html, /Age rating: <\/span>16\+/);
+  assert.match(html, /my-tickets__runtime">143 min/);
+  assert.match(html, /<dt>Format<\/dt>/);
+  assert.match(html, /my-tickets__label">Seats<\/span>/);
+  assert.match(html, /class="visually-hidden"> · Ticket price ₾ 11.27/);
+  for (const movie of [{ title: "Missing Film", posterUrl: null }, { title: "Malformed Optional", posterUrl: " ", ageRating: { code: {} }, runtimeMinutes: "143" }]) {
+    const missing = render({ status: "success", data: [{ ...value, session: { ...value.session, movie } }] });
+    assert.match(missing, /Poster unavailable for/);
+    assert.doesNotMatch(missing, /my-tickets__runtime|class="movie-age"|<img|16\+|143 min/);
+  }
+});
+
+test("Tickets renders complete long text and all seat chips while retaining the server total and factual status", () => {
+  const value = order("REFERENCE-".repeat(30), "refunded");
+  value.session.movie.title = "Long movie title ".repeat(30);
+  value.session.venue.name = "Long venue ".repeat(30);
+  value.tickets = Array.from({ length: 12 }, (_, index) => ({ seatCode: "B" + (index + 1), ticketType: { slug: "server-type-" + index, name: "Server ticket type " + index }, price: 1.01 }));
+  const html = render({ status: "success", data: [value] }, null, "past");
+  assert.ok(html.includes(value.reference));
+  assert.ok(html.includes(value.session.movie.title));
+  assert.ok(html.includes(value.session.venue.name));
+  assert.equal((html.match(/<li>/g) ?? []).length, 12);
+  assert.match(html, /₾ 87.65/);
+  assert.match(html, /my-tickets__status--refunded">Refunded/);
+  assert.doesNotMatch(html, /<button[^>]*>Refund|refund deadline|refundable until/i);
+});
+
+test("unavailable loading/error counts stay visual placeholders and are excluded from tab names", () => {
+  for (const read of [{ status: "loading" }, { status: "error", error: "Read failed" }, { status: "unauthenticated" }]) {
+    const html = render(read);
+    assert.equal((html.match(/class="my-tickets__count" aria-hidden="true">—/g) ?? []).length, 2);
+  }
+  const html = render({ status: "success", data: [order("ONE")] });
+  assert.match(html, /class="my-tickets__count">1/);
+  assert.match(html, /class="my-tickets__count">0/);
+  assert.doesNotMatch(html, /my-tickets__count" aria-hidden/);
+});

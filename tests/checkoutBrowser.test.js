@@ -847,3 +847,167 @@ rendered("Stage A stable Order references retain card instances when server-list
     assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 0);
   } finally { await h.close(); }
 });
+
+const ticketPoster = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400" viewBox="0 0 300 400"><rect width="300" height="400" fill="#39405e"/><circle cx="150" cy="150" r="90" fill="#626e98"/><text x="150" y="300" fill="white" font-size="26" text-anchor="middle">Fixture poster</text></svg>');
+const visualOrder = {
+  ...serverOrder,
+  session: { ...serverOrder.session, movie: { title: "Server Film", posterUrl: ticketPoster,
+    ageRating: { code: "16+", description: "Server age rating description" }, runtimeMinutes: 143 } },
+};
+
+for (const width of [1728, 1280, 768, 390]) {
+  rendered("Stage B verified card values and responsive paid/refunded layout at " + width + "px", async () => {
+    const refunded = { ...visualOrder, id: 8, reference: "SERVER-REFUNDED", status: "refunded", isUpcoming: false, isRefundable: false };
+    const h = await fixture({ checkout: false, path: "profile?tab=tickets",
+      ticketReplies: [{ status: 200, body: { data: [visualOrder, refunded] } }] });
+    try {
+      await h.browser.send("Emulation.setDeviceMetricsOverride", { width, height: width === 390 ? 844 : 1027, deviceScaleFactor: 1, mobile: false });
+      await h.browser.wait("document.querySelector('.my-tickets__order img')?.complete && document.querySelector('.my-tickets__order img').naturalWidth === 300");
+      const layout = await h.browser.evaluate("(() => { const card=document.querySelector('.my-tickets__order'),poster=card.querySelector('.movie-image'),stub=card.querySelector('.my-tickets__stub'); const style=s=>getComputedStyle(card.querySelector(s)),rect=e=>{const r=e.getBoundingClientRect();return {width:r.width,height:r.height,left:r.left,right:r.right,top:r.top,bottom:r.bottom};}; const cs=getComputedStyle(card),ps=getComputedStyle(poster),ss=getComputedStyle(stub); return {card:rect(card),poster:rect(poster),stub:rect(stub),radius:cs.borderRadius,background:cs.backgroundColor,posterRadius:ps.borderRadius,fit:style('img').objectFit,title:style('h3').fontSize,titleWeight:style('h3').fontWeight,labelSize:style('dt').fontSize,labelWeight:style('dt').fontWeight,labelSpacing:style('dt').letterSpacing,valueSize:style('dd').fontSize,valueWeight:style('dd').fontWeight,chipPadding:style('li').padding,chipRadius:style('li').borderRadius,titleGap:style('.my-tickets__title-row').gap,movieGap:style('.my-tickets__movie').gap,stubPadding:ss.padding,separation:innerWidth>1000?ss.borderLeftStyle:ss.borderTopStyle,ratingColor:style('.movie-age').color,ratingAlignment:style('.movie-age').alignSelf,orderGap:style('.my-tickets__stub > div:first-child').gap,orderTop:card.querySelector('.my-tickets__stub > div:first-child').getBoundingClientRect().top-stub.getBoundingClientRect().top,amountSize:style('.my-tickets__total strong').fontSize,amountWeight:style('.my-tickets__total strong').fontWeight,availableWidth:document.documentElement.clientWidth,pageOverflow:document.documentElement.scrollWidth>document.documentElement.clientWidth,cardOverflow:card.scrollWidth>card.clientWidth,alt:card.querySelector('img').alt,text:card.textContent,refundButtons:[...card.querySelectorAll('button,a')].some(e=>/refund/i.test(e.textContent))}; })()");
+      assert.equal(layout.radius, "26px"); assert.equal(layout.background, "rgb(30, 32, 49)");
+      assert.ok(Math.abs(layout.poster.width - 100.121) < .02); assert.ok(Math.abs(layout.poster.height - 133.495) < .02);
+      assert.equal(layout.posterRadius, "10px"); assert.equal(layout.fit, "cover");
+      assert.equal(layout.title, "20px"); assert.equal(layout.titleWeight, "800"); assert.equal(layout.titleGap, "10px");
+      assert.equal(layout.labelSize, "12px"); assert.equal(layout.labelWeight, "600"); assert.equal(layout.labelSpacing, "0.72px");
+      assert.equal(layout.valueSize, "14px"); assert.equal(layout.valueWeight, "600");
+      assert.equal(layout.chipPadding, "4px 10px"); assert.equal(layout.chipRadius, "6px");
+      assert.equal(layout.amountSize, "24px"); assert.equal(layout.amountWeight, "800");
+      assert.equal(layout.ratingColor, "rgb(255, 255, 255)"); assert.equal(layout.ratingAlignment, "center");
+      assert.equal(layout.orderGap, "2px"); assert.equal(layout.orderTop, width > 1000 ? 20 : 21); assert.equal(layout.alt, "Server Film poster");
+      assert.equal(layout.separation, "dashed"); assert.equal(layout.pageOverflow, false); assert.equal(layout.cardOverflow, false);
+      if (width > 1000) {
+        assert.ok(Math.abs(layout.stub.width - 300) < .02); assert.equal(layout.stubPadding, "20px 24px");
+        assert.equal(layout.movieGap, "12px"); assert.ok(layout.card.height >= 183);
+        assert.ok(Math.abs(layout.poster.top - layout.card.top - (layout.card.height - 133.495) / 2) < .02);
+      } else {
+        assert.ok(layout.stub.top >= layout.poster.bottom);
+        assert.ok(Math.abs(layout.stub.width - layout.card.width) < .02);
+      }
+      if (width > 1000) assert.ok(Math.abs(layout.card.width - (layout.availableWidth - 102)) < .02);
+      console.log("Stage B geometry", JSON.stringify({ width, availableWidth: layout.availableWidth, card: layout.card, poster: layout.poster, stub: layout.stub }));
+      for (const value of ["Server Film", "16+", "143 min", "21:45", "Returned Venue", "Returned Hall", "Returned Format", "Returned Language", "Z9", "Returned Student", "Z2", "Returned Child", "SYNTHETIC-ORDER", "₾ 87.65", "Paid"]) assert.ok(layout.text.includes(value), value);
+      assert.equal(layout.refundButtons, false);
+      await h.capture("stage-b-upcoming-" + width);
+      await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').click()");
+      await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+      assert.equal(await h.browser.evaluate("document.querySelector('.my-tickets__status--refunded').textContent"), "Refunded");
+      assert.equal(await h.browser.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth && document.querySelector('.my-tickets__order').scrollWidth <= document.querySelector('.my-tickets__order').clientWidth"), true);
+      await h.capture("stage-b-past-" + width);
+      if (width === 390) {
+        await h.browser.evaluate("document.querySelector('.my-tickets__order').scrollIntoView({block:'start',inline:'nearest'})");
+        await h.capture("stage-b-past-card-390");
+      }
+      assert.equal(h.calls.tickets, 1); assert.deepEqual(h.calls.ticketQueries, [""]);
+      assert.equal(h.calls.orders, 0); assert.equal(h.calls.deletes, 0);
+    } finally { await h.close(); }
+  });
+}
+
+rendered("Stage B long server title/venue/reference and twelve seat chips wrap at all four widths", async () => {
+  const long = { ...visualOrder, reference: "SERVERREFERENCE".repeat(24),
+    session: { ...visualOrder.session, movie: { ...visualOrder.session.movie, title: "LongMovieTitle".repeat(24) },
+      venue: { name: "LongVenueName".repeat(24) }, hall: { name: "LongHallName".repeat(8) },
+      format: { name: "ServerFormat".repeat(8) }, language: { name: "ServerLanguage".repeat(8) } },
+    tickets: Array.from({ length: 12 }, (_, index) => ({ seatCode: "B" + (index + 1),
+      ticketType: { slug: "server-type-" + index, name: index === 0 ? "LongTicketType".repeat(16) : "Server Student" }, price: 1.01 })) };
+  const h = await fixture({ checkout: false, path: "profile?tab=tickets", ticketReplies: [{ status: 200, body: { data: [long] } }] });
+  try {
+    await h.browser.wait("document.querySelectorAll('.my-tickets__seats li').length === 12");
+    for (const width of [1728, 1280, 768, 390]) {
+      await h.browser.send("Emulation.setDeviceMetricsOverride", { width, height: 1027, deviceScaleFactor: 1, mobile: false });
+      const layout = await h.browser.evaluate("(() => { const card=document.querySelector('.my-tickets__order'); const checked=[card,...card.querySelectorAll('.my-tickets__details,.my-tickets__movie,.my-tickets__metadata,.my-tickets__metadata div,dd,h3,.my-tickets__seat-row,.my-tickets__seats,li,.my-tickets__stub,.my-tickets__stub p,.my-tickets__total')]; return {overflow:checked.filter(e=>e.scrollWidth>e.clientWidth+1).map(e=>e.className||e.tagName),pageOverflow:document.documentElement.scrollWidth>document.documentElement.clientWidth,title:card.querySelector('h3').textContent,venue:card.querySelectorAll('dd')[1].textContent,reference:card.querySelector('.my-tickets__stub p').textContent,total:card.querySelector('.my-tickets__total strong').textContent,clipped:[...card.querySelectorAll('h3,dd,li,.my-tickets__stub p')].filter(e=>e.scrollHeight>e.clientHeight+1).map(e=>e.className||e.tagName),posterRatio:card.querySelector('.movie-image').getBoundingClientRect().width/card.querySelector('.movie-image').getBoundingClientRect().height}; })()");
+      assert.deepEqual(layout.overflow, [], "Overflow at " + width); assert.equal(layout.pageOverflow, false);
+      assert.deepEqual(layout.clipped, [], "Clipped text at " + width);
+      assert.equal(layout.title, long.session.movie.title); assert.ok(layout.venue.includes(long.session.venue.name));
+      assert.equal(layout.reference, "#" + long.reference); assert.equal(layout.total, "₾ 87.65");
+      assert.ok(Math.abs(layout.posterRatio - .75) < .001);
+      await h.capture("stage-b-long-" + width);
+    }
+    assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 0); assert.equal(h.calls.deletes, 0);
+  } finally { await h.close(); }
+});
+
+rendered("Stage B missing and failed posters preserve readable fallback without invented optional details", async () => {
+  const missing = { ...serverOrder, session: { ...serverOrder.session, movie: { title: "Missing server poster", posterUrl: null } } };
+  const failed = { ...serverOrder, id: 9, reference: "FAILED-POSTER", session: { ...serverOrder.session, movie: { title: "Failed server poster", posterUrl: "data:image/png;base64,AAAA" } } };
+  const h = await fixture({ checkout: false, path: "profile?tab=tickets", ticketReplies: [{ status: 200, body: { data: [missing, failed] } }] });
+  try {
+    await h.browser.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+    await h.browser.wait("document.querySelectorAll('.my-tickets .movie-image__fallback').length === 2");
+    assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets .movie-image__fallback')].map(e=>e.textContent)"), ["Poster unavailable for Missing server poster", "Poster unavailable for Failed server poster"]);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__runtime,.my-tickets .movie-age').length"), 0);
+    assert.equal(await h.browser.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"), true);
+    assert.equal(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets .movie-image__fallback')].every(e=>e.scrollHeight<=e.clientHeight+1)"), true);
+    await h.capture("stage-b-poster-fallback-390");
+    assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 0);
+  } finally { await h.close(); }
+});
+
+rendered("Stage B late recovery read preserves keyboard tab focus and hides unavailable counts from accessible names", async () => {
+  const h = await fixture({ ticketsPaused: true });
+  try {
+    await h.pay(); await h.settle(201, { data: { id: 7, reference: "SYNTHETIC-ORDER" } });
+    await h.browser.wait("document.querySelector('.order-recovery')");
+    await h.browser.evaluate("document.querySelector('.order-recovery .button--primary').click()");
+    await h.waitTickets();
+    await h.browser.evaluate("document.querySelector('.my-tickets [aria-selected=true]').focus()");
+    await h.browser.send("Accessibility.enable");
+    const { root } = await h.browser.send("DOM.getDocument");
+    const { nodeId } = await h.browser.send("DOM.querySelector", { nodeId: root.nodeId, selector: ".my-tickets [aria-selected=true]" });
+    const before = await h.browser.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false });
+    assert.equal(before.nodes.find(node => node.role?.value === "tab").name.value, "Upcoming");
+    assert.equal(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__count')].every(e=>e.getAttribute('aria-hidden')==='true')"), true);
+    await h.finishTickets(); await h.browser.wait("document.querySelector('.my-tickets__order--recovered')");
+    await h.browser.evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('role')"), "tab");
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('aria-selected')"), "true");
+    const after = await h.browser.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false });
+    assert.match(after.nodes.find(node => node.role?.value === "tab").name.value, /Upcoming.*1/);
+    assert.equal(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__count')].every(e=>!e.hasAttribute('aria-hidden'))"), true);
+    assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 1); assert.equal(h.calls.deletes, 0);
+  } finally { await h.close(); }
+});
+
+rendered("Stage B first keyboard reveal keeps focus on tabs, and explicit recovery still focuses the matching card", async () => {
+  const h = await fixture();
+  const key = async value => {
+    await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: value, ...(value === "Enter" ? { text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 } : {}) });
+    await h.browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: value });
+  };
+  try {
+    await h.pay(); await h.settle(201, { data: { id: 8, reference: "SYNTHETIC-REFUNDED" } });
+    await h.browser.wait("document.querySelector('.order-recovery')");
+    await h.browser.evaluate("document.querySelector('.order-recovery .button--primary').click()");
+    await h.browser.wait("document.querySelector('.my-tickets__recovery button')");
+    await h.browser.evaluate("document.querySelector('.my-tickets [aria-selected=true]').focus()");
+    await key("ArrowRight"); await h.browser.wait("document.querySelector('.my-tickets__order--recovered')");
+    await h.browser.evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('role')"), "tab");
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('aria-selected')"), "true");
+    assert.equal(await h.browser.evaluate("getComputedStyle(document.activeElement).outlineStyle"), "solid");
+    await key("Home"); await h.browser.wait("document.querySelector('.my-tickets__recovery button')");
+    await h.browser.evaluate("document.querySelector('.my-tickets__recovery button').focus()");
+    await key("Enter"); await h.browser.wait("document.activeElement.classList.contains('my-tickets__order--recovered')");
+    assert.match(await h.browser.evaluate("document.activeElement.textContent"), /SYNTHETIC-REFUNDED/);
+    assert.equal(await h.browser.evaluate("document.activeElement.matches(':focus-visible') && getComputedStyle(document.activeElement).outlineStyle==='solid'"), true);
+    assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 1); assert.equal(h.calls.deletes, 0);
+  } finally { await h.close(); }
+});
+
+rendered("Stage B late recovery cannot steal focus after movement to another page control or its blur", async () => {
+  for (const blur of [false, true]) {
+    const h = await fixture({ ticketsPaused: true });
+    try {
+      await h.pay(); await h.settle(201, { data: { id: 7, reference: "SYNTHETIC-ORDER" } });
+      await h.browser.wait("document.querySelector('.order-recovery')");
+      await h.browser.evaluate("document.querySelector('.order-recovery .button--primary').click()");
+      await h.waitTickets();
+      await h.browser.evaluate("document.querySelector('.navbar__logo').focus()");
+      if (blur) await h.browser.evaluate("document.activeElement.blur()");
+      await h.finishTickets(); await h.browser.wait("document.querySelector('.my-tickets__order--recovered')");
+      await h.browser.evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+      assert.equal(await h.browser.evaluate(blur ? "document.activeElement===document.body" : "document.activeElement.classList.contains('navbar__logo')"), true);
+      assert.equal(h.calls.tickets, 1); assert.equal(h.calls.orders, 1); assert.equal(h.calls.deletes, 0);
+    } finally { await h.close(); }
+  }
+});

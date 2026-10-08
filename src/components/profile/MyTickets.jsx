@@ -7,6 +7,7 @@ import useTickets from "../../tickets/useTickets.js";
 import { formatGEL } from "../../booking/seatSelection.js";
 import { formatMovieDate } from "../../movie-detail/movieDetailPresentation.js";
 import MovieImage from "../home/MovieImage.jsx";
+import AgeBadge from "../home/AgeBadge.jsx";
 
 function TicketOrder({ order, recovered, claimRecoveryFocus }) {
   const id = useId(), element = useRef(null);
@@ -16,26 +17,40 @@ function TicketOrder({ order, recovered, claimRecoveryFocus }) {
     }
   }, [recovered, claimRecoveryFocus, order.reference]);
   const { session } = order;
+  const rating = typeof session.movie.ageRating?.code === "string" && session.movie.ageRating.code.trim() ? session.movie.ageRating : null;
+  const runtime = Number.isInteger(session.movie.runtimeMinutes) ? session.movie.runtimeMinutes : null;
   const poster = typeof session.movie.posterUrl === "string" && session.movie.posterUrl.trim() ? session.movie.posterUrl : null;
   return <article ref={element} tabIndex={-1} className={`my-tickets__order${recovered ? " my-tickets__order--recovered" : ""}`} aria-labelledby={`${id}-title ${id}-reference`}>
     <div className="my-tickets__details">
       <MovieImage src={poster} title={session.movie.title} />
       <div className="my-tickets__movie">
-        <h3 id={`${id}-title`}>{session.movie.title}</h3>
+        <div className="my-tickets__title-row">
+          <h3 id={`${id}-title`}>{session.movie.title}</h3>
+          <AgeBadge rating={rating} />
+          {runtime !== null && <span className="my-tickets__runtime">{runtime} min</span>}
+        </div>
         <dl className="my-tickets__metadata">
           <div><dt>Date</dt><dd>{formatMovieDate(session.date, { weekday: "short", day: "numeric", month: "short" })} · {session.time}</dd></div>
           <div><dt>Venue</dt><dd>{session.venue.name} · Hall {session.hall.name}</dd></div>
-          <div><dt>Format / language</dt><dd>{session.format.name} · {session.language.name}</dd></div>
+          <div><dt>Format</dt><dd>{session.format.name} · {session.language.name}</dd></div>
         </dl>
-        <ul className="my-tickets__seats" aria-label="Purchased tickets">
-          {order.tickets.map((ticket, index) => <li key={index}>Seat {ticket.seatCode} · {ticket.ticketType.name} · {formatGEL(ticket.price * 100)}</li>)}
-        </ul>
+        <div className="my-tickets__seat-row">
+          <span className="my-tickets__label">Seats</span>
+          <ul className="my-tickets__seats" aria-label="Purchased tickets">
+            {order.tickets.map((ticket, index) => <li key={index}>
+              <span className="visually-hidden">Seat </span>{ticket.seatCode} · {ticket.ticketType.name}
+              <span className="visually-hidden"> · Ticket price {formatGEL(ticket.price * 100)}</span>
+            </li>)}
+          </ul>
+        </div>
       </div>
     </div>
     <div className="my-tickets__stub">
       <div><span className="my-tickets__label">Order</span><p id={`${id}-reference`}>#{order.reference}</p></div>
-      <p className={`my-tickets__status my-tickets__status--${order.status}`}>{order.status === "paid" ? "Paid" : "Refunded"}</p>
-      <div className="my-tickets__total"><span>Total paid</span><strong>{formatGEL(order.totalPrice * 100)}</strong></div>
+      <div className="my-tickets__amount">
+        <div className="my-tickets__total"><span>Total paid</span><strong>{formatGEL(order.totalPrice * 100)}</strong></div>
+        <p className={`my-tickets__status my-tickets__status--${order.status}`}>{order.status === "paid" ? "Paid" : "Refunded"}</p>
+      </div>
     </div>
   </article>;
 }
@@ -43,16 +58,32 @@ function TicketOrder({ order, recovered, claimRecoveryFocus }) {
 const GROUPS = [{ value: "upcoming", label: "Upcoming" }, { value: "past", label: "Past" }];
 
 export function TicketsContent({ read, identity = null, group = "upcoming", onSelectGroup }) {
-  const id = useId(), tabs = useRef({}), focusedRecovery = useRef(null);
+  const id = useId(), tabs = useRef({}), focusedRecovery = useRef(null), requestedRecovery = useRef(null);
+  const entryFocus = useRef(typeof document === "undefined" ? null : document.activeElement), focusMoved = useRef(false);
+  useEffect(() => {
+    // Capture the focus restored by the departing Checkout dialog.
+    entryFocus.current = document.activeElement;
+    const preserveFocus = (event) => { if (event.target !== entryFocus.current) focusMoved.current = true; };
+    document.addEventListener("focusin", preserveFocus);
+    return () => document.removeEventListener("focusin", preserveFocus);
+  }, []);
   const ready = read.status === "success" || read.status === "empty";
   const groups = ready ? read.groups ?? groupTicketOrders(read.data ?? []) : null;
   const orders = groups?.[group] ?? [];
   const recovered = ready ? findRecoveredOrder(read.data ?? [], identity) : null;
   const claimRecoveryFocus = useCallback((reference) => {
     const key = JSON.stringify([identity, reference]);
-    if (focusedRecovery.current === key) return false;
+    const requested = requestedRecovery.current === reference;
+    if (requested) requestedRecovery.current = null;
+    if (!requested && focusedRecovery.current === key) return false;
     focusedRecovery.current = key;
-    return true;
+    // A late read or ordinary tab navigation must preserve the user’s focus.
+    // The explicit recovery action may still reveal and focus its matching card.
+    if (requested) return true;
+    if (focusMoved.current) return false;
+    const active = document.activeElement;
+    return !active?.isConnected || active === document.body || active === document.documentElement
+      || (active === entryFocus.current && !active.closest(".my-tickets"));
   }, [identity]);
   const select = (value) => onSelectGroup?.(value);
   function navigateTabs(event) {
@@ -70,7 +101,7 @@ export function TicketsContent({ read, identity = null, group = "upcoming", onSe
       {GROUPS.map(({ value, label }) => <button key={value} ref={(element) => { tabs.current[value] = element; }}
         id={id + "-tab-" + value} type="button" role="tab" aria-selected={group === value}
         aria-controls={id + "-panel"} tabIndex={group === value ? 0 : -1} onClick={() => select(value)}>
-        <span>{label}</span><span className="my-tickets__count">{groups ? groups[value].length : "—"}</span>
+        <span>{label}</span><span className="my-tickets__count" aria-hidden={groups ? undefined : true}>{groups ? groups[value].length : "—"}</span>
       </button>)}
     </div>
     <div id={id + "-panel"} className="my-tickets__panel" role="tabpanel" aria-labelledby={id + "-tab-" + group} aria-busy={read.status === "loading"} tabIndex={0}>
@@ -83,7 +114,7 @@ export function TicketsContent({ read, identity = null, group = "upcoming", onSe
       </div>}
       {recoveredGroup && recoveredGroup !== group && <div className="my-tickets__recovery" role="status">
         <p>The order matching your recovery details is in {recoveredGroup === "past" ? "Past" : "Upcoming"}.</p>
-        <button type="button" className="button button--secondary" onClick={() => select(recoveredGroup)}>View matching order in {recoveredGroup === "past" ? "Past" : "Upcoming"}</button>
+        <button type="button" className="button button--secondary" onClick={() => { requestedRecovery.current = recovered.reference; select(recoveredGroup); }}>View matching order in {recoveredGroup === "past" ? "Past" : "Upcoming"}</button>
       </div>}
       {orders.map((order) => <TicketOrder key={order.reference} order={order} recovered={order === recovered} claimRecoveryFocus={claimRecoveryFocus} />)}
     </div>

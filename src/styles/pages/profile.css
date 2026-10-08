@@ -176,3 +176,8 @@
   flex-shrink: 0;
   min-height: 98px;
 }
+
+/* Mobile Tickets inset; Personal Information keeps its existing layout. */
+@media (max-width: 600px) {
+  .profile-page:has(> .my-tickets) { padding-inline: 20px; }
+}

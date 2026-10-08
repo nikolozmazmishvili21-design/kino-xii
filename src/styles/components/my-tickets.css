@@ -1,31 +1,56 @@
-.my-tickets { display: flex; flex-direction: column; gap: 20px; margin-top: 36px; padding-bottom: 36px; }
+.my-tickets { display: flex; flex-direction: column; gap: 20px; margin-top: 36px; padding-bottom: 36px; min-width: 0; }
 .my-tickets__panel > p, .my-tickets__empty p, .my-tickets__recovery p, .my-tickets__error p { margin: 0; font-size: 14px; line-height: 1.3; color: var(--color-muted); }
 .my-tickets__error { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
-.my-tickets__order { display: flex; gap: 18px; min-height: 183px; border-radius: 26px; background: var(--color-surface); }
+/* GTU Ticket_Card 291:18200; API posters and text replace the design examples. */
+.my-tickets__order { display: flex; gap: 18px; min-width: 0; min-height: 183px; border-radius: 26px; background: var(--color-surface); }
 .my-tickets__order--recovered { box-shadow: inset 0 0 0 2px var(--color-accent); }
 .my-tickets__details { display: flex; gap: 18px; align-items: center; flex: 1; min-width: 0; padding: 20px 30px; }
 .my-tickets__details .movie-image { flex: 0 0 100.121px; width: 100.121px; height: 133.495px; border-radius: 10px; }
+.my-tickets__details .movie-image__fallback { padding: 8px; overflow-wrap: anywhere; }
 .my-tickets__movie { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.my-tickets h3 { margin: 0; font-size: 20px; line-height: 22px; font-weight: 800; overflow-wrap: anywhere; }
-.my-tickets__metadata { display: flex; gap: 40px; flex-wrap: wrap; margin: 0; }
-.my-tickets__metadata div { display: flex; flex-direction: column; gap: 4px; }
+.my-tickets__title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.my-tickets h3 { margin: 0; min-width: 0; font-size: 20px; line-height: normal; font-weight: 800; overflow-wrap: anywhere; }
+/* Preserve the rating tint; white meets contrast for this small label. */
+.my-tickets__title-row .movie-age { align-self: center; flex-shrink: 0; padding: 3px 8px; color: var(--color-text); }
+.my-tickets__runtime { color: var(--color-muted); font-size: 14px; line-height: 1.3; }
+.my-tickets__metadata { display: flex; column-gap: 40px; row-gap: 12px; flex-wrap: wrap; margin: 0; }
+.my-tickets__metadata div { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
 .my-tickets dt, .my-tickets__label { color: var(--color-muted); font-size: 12px; font-weight: 600; letter-spacing: .72px; text-transform: uppercase; }
 .my-tickets dd { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-.my-tickets__seats { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
-.my-tickets__seats li { padding: 4px 10px; border-radius: 6px; background: var(--tint-white); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
-.my-tickets__stub { display: flex; flex-direction: column; justify-content: center; gap: 16px; flex: 0 0 300px; padding: 20px 24px; border-left: 1px dashed var(--color-raised); }
-.my-tickets__stub p { margin: 2px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-.my-tickets__status { align-self: flex-start; padding: 4px 10px; border-radius: 999px; background: var(--tint-white); color: var(--color-muted); }
-.my-tickets__status--paid { background: var(--tint-success); color: var(--color-success); }
-.my-tickets__total { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--color-muted); }
-.my-tickets__total strong { color: var(--color-text); font-size: 24px; font-weight: 800; }
+.my-tickets__seat-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.my-tickets__seats { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; list-style: none; margin: 0; padding: 0; }
+.my-tickets__seats li { max-width: 100%; padding: 4px 10px; border-radius: 6px; background: var(--tint-white); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.my-tickets__stub { display: flex; flex-direction: column; gap: 16px; min-width: 0; flex: 0 0 300px; padding: 20px 24px; border-left: 1px dashed var(--color-raised); }
+.my-tickets__stub > div:first-child { display: flex; flex-direction: column; gap: 2px; }
+.my-tickets__stub p { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.my-tickets__amount { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.my-tickets__stub .my-tickets__status { margin: 0; padding: 4px 10px; border-radius: 999px; background: var(--tint-white); color: var(--color-muted); font-size: 12px; }
+.my-tickets__stub .my-tickets__status--paid { background: var(--tint-success); color: var(--color-success); }
+.my-tickets__total { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px; width: 100%; min-width: 0; font-size: 14px; font-weight: 600; color: var(--color-muted); }
+.my-tickets__total strong { color: var(--color-text); font-size: 24px; font-weight: 800; overflow-wrap: anywhere; }
 
 /* GTU Tickets_Tab 291:19182 / 291:19184; counts come from the server list. */
 .my-tickets__tabs { display: flex; align-self: flex-start; padding: 5px; border-radius: 12px; background: var(--color-surface); }
 .my-tickets__tabs button { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border: 0; border-radius: 10px; background: transparent; color: var(--color-muted); font-size: 14px; font-weight: 600; line-height: normal; cursor: pointer; }
-.my-tickets__count { color: var(--color-border); font-size: 12px; }
+.my-tickets__count { color: var(--color-muted); font-size: 12px; }
 .my-tickets__tabs [aria-selected="true"] { background: var(--color-raised); color: var(--color-text); }
 .my-tickets__tabs [aria-selected="true"] .my-tickets__count { color: var(--color-text); }
-.my-tickets__panel { display: flex; flex-direction: column; gap: 20px; }
+.my-tickets__panel { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 .my-tickets__empty, .my-tickets__recovery { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
 .my-tickets__empty a { color: var(--color-text); font-size: 14px; }
+
+/* Conservative adaptations: the verified Figma cards are desktop only. */
+@media (max-width: 1000px) {
+  .my-tickets__order { flex-direction: column; gap: 0; }
+  .my-tickets__stub { flex-basis: auto; border-left: 0; border-top: 1px dashed var(--color-raised); }
+}
+@media (max-width: 600px) {
+  .my-tickets__details { display: grid; grid-template-columns: 100.121px minmax(0, 1fr); padding: 20px 16px; }
+  .my-tickets__details .movie-image { align-self: start; }
+  .my-tickets__movie { display: contents; }
+  .my-tickets__title-row { align-content: center; }
+  .my-tickets__metadata, .my-tickets__seat-row { grid-column: 1 / -1; }
+  .my-tickets__metadata { flex-direction: column; gap: 12px; }
+  .my-tickets__seat-row { flex-direction: column; gap: 8px; }
+  .my-tickets__stub { padding-inline: 16px; }
+}
