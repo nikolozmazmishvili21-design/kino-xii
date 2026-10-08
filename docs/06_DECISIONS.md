@@ -2856,6 +2856,217 @@ No dependency requirement is implied. This decision documents policy only: it im
 
 ---
 
+## D-029 — Refund lifecycle, bounded authentication continuation, and authoritative Tickets reconciliation
+
+**Status:** Accepted
+**Proposed:** 2026-10-08
+
+### Scope and source attribution
+
+Propose the frontend Refund lifecycle for Full My Tickets. This decision requires independent review and explicit acceptance before implementation. It leaves D-001 through D-028 unchanged, including D-026 read recovery, D-027 Hold recovery, and D-028 Checkout/Order recovery. Refund must not inherit their mutation-specific replay rules merely by reusing helpers.
+
+Sources: OpenAPI paths /tickets.get and /orders/{order}/refund.post, components.schemas.Order, and components.responses.Unauthenticated / Forbidden / BookingBlocked; Assignment §§21–26; Master Spec §§16–19; Architecture §§9, 20, 23, 34, and 36. OpenAPI governs the contract, Assignment governs functionality, and exact Figma inspection governs visuals. Lifecycle names, continuation limits, runtime ownership, recovery copy, and dismissal behavior below are proposed Kino XII policies, not new backend guarantees or verified Figma states.
+
+### A. Contract baseline and Order ownership
+
+Both operations require Bearer authentication. Refund is POST /orders/{order}/refund with no documented request body; success is HTTP 200 with { data: Order }. GET /tickets returns HTTP 200 with { data: Order[] }; omit filter for exact-reference recovery across Upcoming and Past. The optional filter supports only upcoming and past. Preserve the documented newest-session-first ordering.
+
+Use the exact server-returned Order.reference as the refund path value, encoded as one URL path segment without trimming, case conversion, or numeric-ID fallback. The path parameter is a string with example KX-7QF2LD, matching Order.reference; Order.id is an integer. Choosing reference is the explicit scope of this proposal and the requested checkpoint, not a claim that numeric-ID routing is supported or that OpenAPI explicitly describes backend binding. Do not manufacture a reference or substitute a Hold, session, seat, or request ID.
+
+Order.isRefundable is the sole refund-eligibility authority. Never compute the two-hour cutoff, derive eligibility from startsAt, or run a local cutoff timer. Upcoming/Past membership comes from Order.isUpcoming or the documented server filter, never local date arithmetic. Validate status/flags for usable, coherent server state; this does not add an independent eligibility calculation. A malformed or inconsistent Order cannot authorize POST.
+
+Render a disabled Refund control and accessible explanation/tooltip when the server marks an Upcoming Order non-refundable. No refundReason property is documented. General explanatory copy can state the documented cutoff rule but must not invent a returned reason. Refunded Orders belong in Past regardless of session date, with no upcoming purchase/refund actions. Refund requires no locally invented booking-profile-completion gate.
+
+### B. State ownership and lifetime
+
+Keep the dialog, selected tab, Orders read state, and visible feedback in the Profile/Tickets feature. Keep refund domain operations separate from rendering and endpoint handling in ticketsApi. Existing Profile drafts, URL navigation, factual Order recovery, and BookingProvider ownership remain intact.
+
+A small Refund-specific runtime ledger must survive dialog, Tickets-panel, and Profile-route unmount/remount within the running application. Own it at a stable app-shell lifetime rather than inside a disposable dialog/hook. It stores mutation/continuation identity and unresolved-reference guards, not a general UI store or global Orders cache. React built-in state/refs and a narrowly scoped shared interface are sufficient; no dependency or Booking reducer rewrite is implied.
+
+Use one active confirmed continuation, and at most one actively pending client-owned Refund POST in the application runtime, including across account changes. An uncertain result invalidates the old consent and prevents automatic replay; it is not a permanent ban on a separately verified, newly confirmed attempt under Section F. Keep a minimal prior-uncertainty marker separate from the current attempt phase, even when a new attempt becomes available or starts. Retain only the records needed for settlement, uncertainty disclosure, and guarded re-entry. Dialog/panel effects may subscribe or GET; they must never create or replay POST from mount, rerender, subgroup selection, or restoration.
+
+Represent attempt phases as idle, confirming, submitting, reauth, verifying, verification_retry, retry_available, succeeded, rejected, uncertain, and blocked. UI attachment, prior uncertainty, and card display status (ready, refreshing, or error) are separate from attempt phase. Verification records its purpose: definite-401 continuation, uncertainty recovery/new-attempt eligibility, rejected/blocked-context refresh for a new intent, or display restoration. A paid snapshot never authorizes an automatic POST in the uncertainty flow.
+
+Consent rules are explicit: confirming holds fresh unsubmitted consent; submitting consumes that dispatch consent; reauth/verifying/verification_retry retain the original consent only for an unused definite-401 continuation. Other verification holds no POST consent. retry_available permits opening NEW confirmation, never dispatching by itself, and retains prior uncertainty. succeeded/rejected/uncertain/blocked hold no reusable POST consent. blocked is terminal for the old continuation: erase its descriptor and automatic replay permission. verification_retry retains only the purpose-specific read recovery and, for the unused 401 path only, its bounded consent. No mount or read retry can revive terminally discarded consent.
+
+| Event / boundary | Transition / permitted work |
+| --- | --- |
+| Explicit Refund on usable eligible Order, with no unresolved history | idle → confirming; no POST |
+| Cancel/X/Close/Escape/backdrop before dispatch | confirming → idle for an ordinary attempt, or retry_available/uncertain for a renewed attempt according to still-current verification; erase consent, retain prior uncertainty; no POST |
+| Explicit confirmation with current account/reference/consent guards and no active client POST | confirming → submitting; acquire synchronous lock before dispatch |
+| Matching HTTP 200 with status refunded | submitting → succeeded; record reported outcome; adopt card only if fully usable, otherwise refresh display through GET |
+| Current first definite HTTP 401 with original consent still active | submitting → reauth; preserve bounded intent |
+| Same-account authentication for definite-401 intent | reauth → verifying (401 purpose); fresh unfiltered GET only |
+| Exact fresh eligible target in 401 verification, unused budget and active intent | verifying → submitting once; consume replay budget before automatic continuation POST |
+| Refunded target in any verification | verifying/verification_retry/retry_available → succeeded; retain factual reported refund outcome; restore complete display if needed; no POST |
+| Ineligible/missing/duplicate/malformed/contradictory target in 401 verification | verifying → blocked; erase old continuation; later action requires fresh authority and new confirmation |
+| Transient GET failure in 401 verification | verifying → verification_retry; retain unused bounded consent; explicit GET retry only |
+| Explicit verification retry | verification_retry → verifying with the same purpose and budget; no consent creation |
+| HTTP 401 during definite-401 verification, or on its one continuation POST | verifying/submitting → blocked; discard old consent/budget, guard auth expiry; no automatic second Login/replay cycle |
+| Definite 403 / defensive 404 / message-only 422 | submitting → rejected; show server feedback and refresh factual Tickets; no automatic POST |
+| Factual refresh after rejection (initial or explicit GET retry) | rejected → verifying (read-only purpose); preserve refusal message and prior evidence; no old consent |
+| Definite refusal acknowledged / feedback dismissed | rejected → idle with old consent erased; cached target cannot authorize another attempt before fresh verification; retain any earlier uncertainty |
+| Network/body-read failure, unrecognized identity/status, or unknown server outcome | submitting → uncertain after local settlement; erase old consent; no automatic POST |
+| Explicit Check refund status after the client request has settled | uncertain → verifying (uncertainty purpose); fresh unfiltered GET only |
+| Fresh exact usable paid/Upcoming/refundable target in uncertainty verification and no actively pending client POST | verifying → retry_available; retain earlier uncertainty; no POST |
+| Paid but non-refundable/Past, missing/invalid/duplicate target in uncertainty verification | verifying → uncertain; no new POST; GET recovery remains available |
+| Failed uncertainty/rejected/blocked-context verification | verifying → verification_retry; hold no POST consent; preserve prior evidence; explicit GET retry only |
+| Read-only recovery GET 401 outside definite-401 continuation | verifying → verification_retry; bounded same-account Login/read recovery only; no POST on auth success; exhausted read-auth recovery → blocked with prior uncertainty retained |
+| Explicit renewed Refund after eligible verification | retry_available → confirming with NEW consent and Section F warning; no POST until new explicit confirmation |
+| Eligibility snapshot superseded or account/auth changes before renewed dispatch | retry_available/confirming → uncertain if prior outcome unresolved, otherwise blocked; erase new consent and require fresh GET |
+| Completion acknowledged / completed dialog closed | succeeded → idle; retain reported refunded authority and display-refresh/error state; no Refund enablement from stale paid data |
+| Display-restoration GET fails or returns 401 after reported success | Keep succeeded/acknowledged-idle outcome authority; display status becomes error/auth-required; explicit bounded GET recovery, never POST |
+| Explicit Retry display details after reported success | Keep outcome authority; display status refreshing; fresh GET only |
+| Ineligible/missing/duplicate/malformed target in rejected/blocked-context verification | verifying → blocked for that proposed new intent, or uncertain when prior ambiguity remains; no POST; later recovery requires fresh GET |
+| Explicit read recovery from blocked | blocked → verifying (new-intent authority purpose, never old 401-continuation purpose) with no old consent/budget; fresh eligible data can support a new confirmation, or retry_available with warning if prior uncertainty remains |
+| Blocked feedback dismissed | blocked → idle presentation; old continuation remains terminated; cached target stays unauthorized until fresh GET, and prior uncertainty still requires Section F |
+| Pending Close or leaving My Tickets context | submitting stays submitting, detached; revoke further automatic continuation; lock survives until local settlement |
+| Leaving My Tickets, or explicitly canceling retained auth/read continuation before further dispatch | confirming/reauth/verifying/verification_retry/retry_available → idle presentation; erase continuation/new consent; preserve prior outcome markers and any separately active request |
+| Upcoming/Past, URL subgroup, or Back/Forward changes within My Tickets | Preserve runtime phase, consent generation, lock, and applicable bounded continuation; no mount-triggered POST |
+| Expected auth-expiry UI unmount for a permitted continuation | Preserve runtime intent and applicable phase; mask protected data; no inferred cancellation |
+| Explicit logout or different account | Detach pending request; terminate continuation/consent and hide protected UI; retain only origin guards/evidence; old responses cannot populate the new account |
+| Same account returns after auth invalidation | Fresh guarded GET before adopting protected data or opening new confirmation; no old POST replay |
+
+Stable idle means no reusable confirmation/continuation, not erased server outcome or proof that an uncertain request failed. Fresh rejected-context/blocked verification transitions to idle with authoritative eligible data when there is no prior uncertainty; with prior uncertainty, it must satisfy Section F and transition to retry_available. Terminal or exhausted automatic continuation never resumes from verification_retry/blocked merely because the component mounts again.
+
+### C. Confirmation, synchronous lock, and request identity
+
+Open confirmation only from an actual usable Order. Explain irreversibility and identify the exact Order with its returned movie/session/tickets. The explicit confirmation authorizes that account/reference only. Immediately before dispatch, recheck current account/auth, selected-reference ownership, authoritative isRefundable, coherent paid/Upcoming state, consent generation, and absence of any actively pending client-owned POST. If prior uncertainty exists, require the fresh Section F verification and NEW warned confirmation; the uncertainty marker is retained, not treated as reusable consent.
+
+Acquire the runtime lock synchronously before notifying React subscribers or constructing dispatch work. Then set explicit submitting state, disable the confirm action and competing refund starts, and announce pending once. Recheck guards after synchronous notifications before dispatch. Double-click, repeated Enter/form submission, stale event handlers, StrictMode effect replay, and panel/dialog remount must not send another POST.
+
+Capture a unique request ID, consent/operation generation, account ID, auth/token generation, exact reference, and available original Order/session identity for correspondence checks. The private dispatch/guard closure may capture the request credential; never expose it through reducer/UI state, continuations, logs, URLs, probes, or storage. A continuation contains plain bounded identity data, not a callback, Promise, token, full Order, contact, or payment payload.
+
+Every settlement, verification read, auth effect, notice, and delayed focus callback must check the applicable request, account/auth, consent, and current presentation identity. Only the owning request can release its lock. An obsolete response cannot clear a newer lock, invalidate newer auth, overwrite another Order, or reopen/focus a newer dialog.
+
+### D. Authoritative outcome versus complete card adoption
+
+HTTP 200 with an object envelope containing data.reference exactly matching the requested Order.reference and data.status === "refunded" establishes the server-reported refund outcome under current request/account/auth guards. Record succeeded and retain that minimal factual outcome. Missing poster, total, flags, ticket/session details, or other unrelated display fields do not by themselves make that reported outcome ambiguous. Additional inconsistent display/correspondence fields require reconciliation, not erasure of the matching reference/status evidence.
+
+Complete-card adoption is a separate check: require coherent returned boolean isUpcoming/isRefundable flags (false for a refunded Order), finite server totalPrice, usable session/movie/venue/hall/date/time/format/language context, and non-empty usable tickets with seatCode, ticketType slug/name, and finite prices. Check captured Order/session IDs where supplied; do not coerce identifiers. Optional contact/card/timestamp fields are required only if displayed. These are frontend usability checks, not a claim that OpenAPI formally marks every field required. Reuse compatible pure readability helpers; do not use the paid-only Confirmation validator or tighten Checkout validation merely for Refund.
+
+When the outcome is reported refunded but the card is incomplete/inconsistent, set display status refreshing and issue fresh unfiltered GET /tickets to locate the exact reference and restore complete server-provided display data. Show factual refund-completion feedback plus loading/error for its details; do not adopt the partial object as a full card, merge guessed fields/flags into the previous paid Order, or fabricate a Past card. GET failure, target absence, or contradictory paid data does not erase the reported success or enable another Refund. Keep its factual outcome separate while allowing read-only display recovery. Missing/mismatched reference, unrecognized/non-refunded status, or a genuinely unusable identity/status envelope remains in Section F uncertainty; an unexpected successful HTTP status is not a documented refund confirmation.
+
+For a complete guarded success, replace the matching record with returned Order authority, render returned ticket/session/price facts, and group by returned isUpcoming. Do not optimistically delete or locally mark a paid Order refunded. Keep the selected tab; announce completion and offer explicit View past tickets. Fresh server lists reconcile ordering; do not calculate cross-tab positions or grouping from client dates.
+
+Advance the Tickets read/mutation generation and abort/obsolete competing reads at dispatch and again at outcome settlement/reconciliation. A GET started before the reported mutation result must not overwrite it, including one begun during POST. Remounted readers share the same authority barrier. A failed refresh cannot undo reported success. A later contradictory paid record for a reported refunded reference is an inconsistent verification result: surface safe feedback, preserve known outcome, and never re-enable Refund from that contradiction. Closing/acknowledging success returns presentation to idle while retaining this outcome and any display-recovery state.
+
+### E. Definite HTTP 401 — one bounded automatic continuation
+
+A reliably received current HTTP 401 is the documented authentication rejection. It is distinct from an ambiguous transport/body-read failure, which cannot be classified as 401 from message text or presumed token expiry. The proposed continuation follows OpenAPI's login-and-replay instruction only for that definite rejection; it does not infer rollback for lost responses.
+
+For the first definite 401 while the original confirmed intent is still active:
+
+1. Verify current request and expected-auth ownership; invalidate only the stale authentication through existing guarded auth coordination, without logout POST or a global interceptor. End the dispatched request's pending marker and retain the operation's continuation guard.
+2. Preserve one transient REFUND_REAUTH descriptor: accountId, exact reference, captured Order/session identity where available, consent generation, replayCount initially zero, and verification purpose. Keep confirmation consent in memory; retain no full Order, credential, or payment data in the descriptor.
+3. Open the existing Login flow, preserving intent across Login ↔ Sign Up switching. Coordinate the bounded Refund continuation separately from OPEN_BOOKING and Profile drafts; never invent a booking session ID, silently overwrite a booking continuation, or overwrite the existing booking-logout cleanup handler.
+4. On successful authentication, require the original account ID and current new auth generation. A different account, explicit logout, auth cancellation, dismissed refund intent, leaving My Tickets context as defined in Section G, superseding intent, or exhausted budget discards automatic continuation. No POST is sent for that old consent.
+5. Fetch fresh unfiltered GET /tickets under the new auth with read/request guards. Find exactly one Order whose reference equals the captured reference; validate captured IDs when present and current server status/flags. Never match by movie, session, seats, contact, or list index alone.
+6. If the unique exact-reference Order reports refunded, retain factual refunded outcome without POST or a claim that the rejected request caused it; restore incomplete display through Section D. If it is paid, Upcoming, and isRefundable === true, with all consent/account/request guards still current, consume the descriptor and increment replayCount to one synchronously before acquiring dispatch ownership and sending one automatic continuation POST. No second confirmation click is required for this still-valid previously confirmed intent.
+7. Paid but non-refundable/Past, missing/duplicate reference, or inconsistent identity/flags ends automatic continuation with safe explanation and no POST. A transient verification failure retains the unused continuation in verification_retry, distinct from terminal blocked; offer explicit Retry verification (GET only). A valid retry can continue once only while the same undismissed intent remains active.
+
+A 401 from the continuation POST, or a 401 during its verification, may expire only the guarded current auth but ends the descriptor/budget and must not automatically open another Login/replay cycle. Show sign-in/recovery feedback; subsequent explicit authentication and a newly confirmed action are distinct user intent, not a reset of the old replay budget. Mounting, retrying a read, or switching tabs cannot reset the budget.
+
+If the original dialog was closed or My Tickets context was left while POST was pending, a late 401 is detached settlement: no automatic Login, verification-to-POST, or consent revival. Cancellation revoked permission for further dispatch even though it could not cancel the request already sent.
+
+Implementation note (N5): src/auth/pendingAction.js currently normalizes only OPEN_BOOKING. AppShell/Profile expiry currently stores only a Profile access/reauth descriptor with userId; it does not store Order reference, Refund consent, or replay budget. The future Refund feature needs a separate bounded coordination path connected to existing auth success/cancellation, account guards, and semantic My Tickets context. Reusing Profile expiry alone does not implement Refund continuation. Do not extend that path, fake a booking action, or change application code in this documentation checkpoint.
+
+### F. Ambiguous outcome, factual verification, and a newly confirmed attempt
+
+Network failure after dispatch, response-body read failure, an unusable identity/status success response under Section D, HTTP 500 with unknown outcome, and an unclassified status/outcome enter uncertain after local request settlement. Do not announce failure, assume rollback, or automatically repeat POST. An aborted submitted request supplies no server-cancellation proof. Preserve minimal account/reference prior-uncertainty evidence across dismissal/remount; uncertainty invalidates the old dispatch consent but is not a session-long prohibition on a new explicit attempt.
+
+Use proposed project copy: We couldn't confirm whether your refund was completed. Offer Check refund status (fresh unfiltered GET /tickets), and Close/Return to my tickets to leave presentation. Repeated checks are reads only. Neither GET completion, auth success, component mounting, nor an eligible flag may automatically POST after ambiguity.
+
+Before verification can authorize a renewed attempt, the original client-owned POST must no longer be actively pending: its Promise has settled, it has been classified uncertain, and its own in-flight lock has been retired without clearing another request's lock. Obtain a new unfiltered GET /tickets initiated after that settlement, for the same authenticated account and current auth/read generation. Locate exactly one Order by exact reference, validate identity/status and ensure no other client-owned Refund POST is active. A paid target additionally needs complete usable server data and coherent eligibility flags before another attempt can be offered. A read begun while the original request was pending cannot serve as this new-attempt eligibility evidence.
+
+| Fresh verification evidence | Interpretation / permitted UX |
+| --- | --- |
+| Exactly one matching Order reports status refunded | Treat it as currently refunded and use Section D to restore complete display if needed; no POST; do not attribute which request caused it |
+| Exactly one usable matching Order has status paid, isUpcoming === true, and isRefundable === true, with the settled-request/account guards above | retry_available: offer an explicit new Refund confirmation with the warning below; no automatic POST and no claim the old attempt failed |
+| Matching paid Order is Past or isRefundable is not true | Keep factual status and server-controlled disabled eligibility; uncertain/recovery presentation remains; no new POST |
+| GET fails, reference is missing/duplicated, identity/status are unusable, or a paid target has unusable/contradictory flags/display data | verification_retry for transient read failure, uncertain for inconclusive target; GET retry only; no new POST |
+
+Only an explicit user action from retry_available may open NEW confirmation. Before its confirm control, show this proposed warning: We couldn't confirm the earlier refund. Your tickets currently show this order as paid and refundable, but the earlier request may still complete. Confirming sends a new refund request. Keep that warning in the confirmation interaction; no default-confirm, automatic acceptance, or assertion that the new request is guaranteed safe.
+
+NEW explicit confirmation creates a new consent generation, request identity, synchronous lock, and current account/auth ownership. Recheck exact reference, fresh eligibility evidence, active-request absence, and read/consent generations immediately before dispatch. A changed account/auth/context, revoked consent, superseded verification, or reported refunded/ineligible target prevents dispatch and requires appropriate fresh verification. Cancellation erases the new consent without erasing the earlier uncertainty. This is a new user-initiated operation, not a replay of the uncertain mutation. Its own definite-401 handling remains bounded by Section E; retained prior uncertainty stays disclosed rather than being reset by the new intent.
+
+A paid snapshot does not prove that the earlier server request has stopped or cannot still settle. Local Promise settlement ends client-owned pending work only. OpenAPI documents 422 refusal when already refunded, but no idempotency key, transactional atomicity, concurrent-request serialization, or exactly-once delivery guarantee. This proposed recovery permits a newly warned attempt under fresh server eligibility and consent, with residual backend uncertainty; it does not claim duplicate refunds are mathematically impossible. Never infer a rollback, create an idempotency key, or silently clear prior uncertainty just because verification is paid or a new attempt starts. A later refunded report establishes current refunded state without proving that the earlier request failed or identifying which attempt caused it.
+
+On the new attempt's 422, display the actual server message, finish that confirmed attempt, and refresh unfiltered authoritative Tickets state. Do not parse the message to infer refunded/cutoff state. Derive current status/flags from structured server data, retain accurate prior-outcome disclosure, and require another fresh warned confirmation before any subsequent separately permitted attempt. Another ambiguous outcome returns to verification recovery, never an automatic retry loop.
+
+A GET 401 during uncertainty/new-attempt eligibility recovery uses one bounded same-account Login/read continuation only. Transition to verification_retry with no POST consent; after auth, a fresh GET may restore factual state or retry_available, but POST still requires a NEW warned confirmation. A second 401 in that read-recovery cycle terminates it in blocked, masks protected data, and requires explicit sign-in/read recovery without automatic looping. Different-account auth or explicit cancellation discards that read continuation; origin outcome evidence remains private. Cancellation/navigation never turns uncertainty into failure.
+
+### G. Pending dismissal, My Tickets context, and late settlement
+
+Before dispatch, Cancel, X, Close, Escape, and backdrop dismiss confirmation and erase consent; no request is sent. While POST is pending, keep X/Close/Escape/backdrop available and close UI promptly. Disable the mutation confirmation, not dismissal. Replace any Cancel label during submission with Close, explain that closing does not cancel a submitted refund, and retain pending status in the account's Tickets context when visible.
+
+A pending dismissal revokes permission for any future automatic continuation POST, detaches presentation, and leaves the dispatched request and ledger lock intact until local settlement. Do not abort POST merely to implement dismissal, assume abortion canceled server work, release seats locally, DELETE a Hold, or attempt a compensating mutation. This resolves Assignment §22 dismissal versus §§22/26 duplicate prevention: close remains usable while mutation ownership survives independently. A later separately verified and newly confirmed attempt under Section F is distinct consent, not revival of a canceled continuation.
+
+Define My Tickets context semantically using the existing route helpers: pathname === ROUTES.profile and profileTab(search) === "tickets" (currently /profile?tab=tickets). Leaving that context for another page OR Personal Information/another Profile panel revokes unsubmitted confirmation, automatic 401 continuation, read-only auth continuation, and any unconsumed new-attempt verification permission; it detaches dispatched work without erasing origin outcome evidence. A pathname-only check is insufficient. Check current context/consent generation again before continuation dispatch, so navigating away and back cannot revive old consent.
+
+Changing Upcoming/Past within My Tickets does NOT leave this context. URL-only subgroup/query changes, unrelated search parameters, and browser Back/Forward while the semantic predicate remains true preserve runtime consent generation, lock, and applicable continuation. Back/Forward to another Profile panel or another page does leave it and cancels continuation. Track true-to-false context membership and explicit cancellations, not location-object identity, the entire search string, or every component unmount.
+
+Ordinary dialog/panel unmount, StrictMode cleanup, subgroup changes, and expected auth-expiry/Login UI replacement detach presentation without clearing runtime ownership. The Profile auth gate unmounts MyTickets during reauthentication; that expected unmount while the route remains in My Tickets must not be mistaken for user cancellation. Unsubmitted local confirmation is discarded on explicit dismissal/context exit; UI cleanup or subgroup remount alone must not be interpreted as cancellation. A previously confirmed 401 intent remains runtime-owned until explicit cancellation or another Section E terminal condition. Remount can GET/subscribe and display existing phases, never reset locks/create consent/dispatch POST. Only the domain coordinator completing Section E may perform its bounded automatic continuation; Section F always requires a new explicit confirmation. Late callbacks cannot continue after consent/context generation was revoked.
+
+For detached settlement with unchanged originating account/auth, matching HTTP 200/refunded identity establishes the reported outcome even if display is incomplete. Update the active matching Tickets feature only under shared guards, or retain minimal outcome/invalidation and restore display through GET on next entry. Queue at most one non-sensitive completion notice; do not reopen/navigate/focus UI automatically. A definite refusal queues account-scoped feedback; a detached 401 does not force Login for canceled consent. Uncertainty preserves origin evidence and offers Section F recovery. Notification styling is project fallback, not a verified Figma toast/dependency.
+
+Expected auth expiry for permitted Section E continuation hides protected UI but preserves its bounded consent through the guest/Login interval. Read-only auth recovery under Section F preserves only its read descriptor and outcome evidence, not POST consent. Explicit logout/account switching immediately hides protected Orders/dialog/feedback, discards continuation/new consent/eligibility snapshots and protected response data, and invalidates display/auth generations without awaiting POST. Any still-active client POST retains the runtime dispatch lock across that account change; new-account UI must expose no origin Order details. Retain only private minimal origin/request/reference evidence and guards; never expose them to another account or borrow its credentials. Old-auth settlement may retire only its own pending marker, never replace User/Orders, open Login, display an old notice, or clear a newer lock. Same-account later login requires fresh GET; neither login nor returning to My Tickets restores old confirmation.
+
+Refund adds no browser-storage or URL persistence for intent, ledger, Orders, credentials, or outcome markers. Existing tokenStorage/persistence remains unchanged under D-006. Reload/browser close loses in-memory tracking; no cross-refresh duplicate-prevention or exactly-once guarantee follows. Never restore/replay POST, present refresh as a way to bypass recovery, or claim a later paid list proves the prior request failed. Normal factual rendering after refresh supplies current eligibility only; known uncertainty requires the Section F warning/new confirmation, and lost runtime history cannot be reconstructed or given unsupported guarantees.
+
+### H. Received errors and safe retry boundaries
+
+| Evidence | Proposed treatment |
+| --- | --- |
+| Definite current 401 | Section E only; stale/detached 401 cannot expire newer auth or replay canceled consent |
+| Definite 403 | Ownership failure; show safe server feedback, block the offending context, no automatic Login/POST; fresh current-account GET must establish usable target ownership before any new confirmation |
+| Received 404 | Defensive missing-context rejection; safe not-found feedback and fresh GET, no cached-context retry; not an endpoint-specific documented response |
+| Message-only 422 | Definite business refusal; show server message directly, end confirmed attempt, refresh exact factual Order/eligibility, no automatic POST |
+| Unexpected 422 errors container | Preserve surfaced messages; there are no documented Refund request-body fields to map onto invented inputs; no automatic POST |
+| Network/body-read/unusable identity-status/500/unclassified outcome | Section F uncertainty, no rollback or repeat-POST assumption |
+
+Do not parse messages to decide already refunded, cutoff reached, account ownership, or missing Order. Derive state only from structured status and fresh usable Order fields. If a 422 refresh proves refunded, report factual state; if it proves paid/non-refundable, render its flag and preserve refusal feedback. A new user-confirmed attempt after a definite rejection requires fresh coherent server authority and current eligibility; it is not automatic replay. Inconclusive verification blocks that attempt. Prior uncertainty is not erased by eligible data; any renewed attempt must satisfy Section F fresh verification, client-settlement, warning, and NEW confirmation rules.
+
+Server message/body retention must not expose credentials or unrelated-account details. Unknown/missing message uses neutral project error copy, not an invented backend cause. Do not reuse Checkout 409 seat-reconciliation or Hold-expiry behavior for Refund; neither is documented here. Retry controls must make clear whether they GET for verification or start a separately permitted newly confirmed action.
+
+### I. Figma, accessibility, and unresolved source boundaries
+
+Use connection link_6ac0b67d4a348191a63166ae0ce0eb57 and file Zeb7RQ8mjGp04YIPde2ud2. The preceding inspection verified metadata for Upcoming/Past variants and a ticket-card instance containing Refund and explanatory-text layers; it did not verify full styles or a dedicated Refund confirmation modal. Do not switch to Primary or the older provenance file.
+
+Reuse established Modal patterns for semantic dialog labeling, dimmed backdrop, focus containment/restore, initial focus, Escape/backdrop behavior, and visible keyboard focus. Use a clearly labeled confirmation/cancel interaction, pending aria-busy/status, and associated explanation available to keyboard users even when Refund is disabled. Delayed settlement must not steal focus from another route/account/dialog; after a card moves out of Upcoming, restore focus to a surviving logical control rather than a removed button.
+
+Exact Refund confirmation geometry, typography, colors, spacing, and responsive states require the separate Figma audit. Existing modal-pattern reuse and the pending/uncertain copy above are proposed UX fallbacks; do not present them as exact Figma values or claim full visual verification.
+
+The proposed received-401 policy follows OpenAPI continuation wording and deliberately differs from D-028's Order-specific payment re-entry policy. It does not supersede that policy. The general 500/network retry requirement is addressed by factual verification and, when Section F conditions hold, a new warned user-confirmed attempt. Automatic replay after ambiguity remains prohibited. The paid snapshot is eligibility evidence, not proof of rollback or server settlement; independent review must assess this explicit residual-risk recovery policy. Backend transaction, idempotency, ordering-after-write, and cross-refresh completion guarantees remain unverified; this policy supplies none. No conflict requires rewriting D-026, D-027, or D-028. If later backend/design evidence conflicts with these proposals, report and reconcile it before implementation.
+
+### J. Acceptance and testing requirements
+
+Independent review must verify the lifecycle table against the detailed rules and explicitly accept or revise this Pending proposal. Full visual implementation additionally requires the dedicated Figma audit. Acceptance must not be inferred from adding this text or from prior Checkout approval.
+
+Implementation acceptance requires deterministic tests for:
+
+- Exact encoded returned-reference POST, no invented payload/endpoint, exclusively server-driven eligibility/grouping, and no refund action for Past.
+- Pre-dispatch cancellation sends no POST; double-click/repeated Enter/StrictMode/remount dispatch once; synchronous subscribers changing auth/consent before dispatch stop work.
+- Matching HTTP 200/reference/refunded status establishes reported outcome despite missing display data; incomplete/contradictory card fields trigger fresh GET without partial-card adoption, false ambiguity, or outcome loss on refresh failure. Unusable identity/status remains uncertain; stable keys, cross-tab migration, stale GET suppression, and acknowledged-success authority remain guarded.
+- Definite 401 followed by same-account auth and exact fresh eligible Order continues once; already-refunded/non-refundable/Past/missing/duplicate/mismatched targets never replay. verification_retry retains bounded consent only for unused 401 continuation; blocked discards it. Cover explicit read recovery, purpose-specific GET 401 handling, exhausted budgets, and no implicit replay from any idle/blocked/remounted presentation.
+- Login/Sign Up switching and expected auth-gate unmount preserve intent; ordinary remount/StrictMode cleanup do not create POST. Leaving My Tickets for another page or Personal Information revokes continuation; Upcoming/Past, URL-only subgroup changes, and Back/Forward within My Tickets preserve it. Explicit cancellation, newer intent, account change, and stale auth results cannot revive consent.
+- Ambiguous POST plus refunded/eligible-paid/ineligible/inconclusive verification. A still-pending original client POST or absent/invalid/failed verification prevents another POST; fresh exact eligible data after local settlement permits only NEW warned confirmation and identity/lock/guards. Paid snapshots, auth success, and repeated GET checks never automatically replay POST; old uncertainty survives a new intent, its refusal, and cancellation. Show actual 422 messages and refresh structured state without text parsing.
+- Pending X/Close/Escape/backdrop, navigation, unmount/remount, logout/account switch, same-account return, late success/refusal/uncertainty, and stale callbacks never release a newer lock, expose private data, or reopen/focus obsolete UI.
+- Accessible keyboard confirmation, disabled explanation, pending announcements, dismissal, focus after card removal, and account-scoped recovery feedback.
+- Complete lifecycle-table transitions, including succeeded/rejected → idle without evidence loss, blocked recovery without old consent, renewed confirmation, cancellation/account boundaries, and prior-uncertainty preservation. Verify the separate future Refund/auth coordination path without assuming OPEN_BOOKING or Profile expiry already stores it; regress Profile drafts/navigation, minimal Tickets, Order recovery hints, booking logout cleanup, and D-026/D-027/D-028.
+
+Browser QA must use a disposable isolated browser with interception installed before navigation. Fulfill known Refund/GET responses synthetically, block unknown external API traffic, assert no production mutation forwarding, and fail rather than claim coverage when required browser cases skip. Pure/API tests mock transport. Tests must not claim backend idempotency, cancellation, rollback, or cross-refresh protection.
+
+### Rationale and affected modules
+
+Refund is irreversible and changes both server seats and Order grouping. The current minimal Tickets hook safely owns reads but has no Refund mutation/continuation ledger or read-versus-mutation barrier. Separating short-lived presentation from guarded runtime ownership permits Assignment-compliant dismissal, bounded protected-action continuation, and factual uncertainty recovery without guessing backend outcomes.
+
+Affected future implementation areas: ticketsApi; Tickets domain operations/read hook and stable runtime ownership; MyTickets cards/tabs and Refund confirmation; existing AppShell/Profile-access/auth cancellation and logout integration; compatible pure Order usability checks; existing Modal accessibility; verified Tickets/dialog CSS; focused pure/rendering/intercepted-browser tests. New feature-specific helpers are permitted only as needed; no generic store, dependency, fake booking action, or unrelated architectural refactor is implied.
+
+This checkpoint changes docs/06_DECISIONS.md only. It implements no Refund, changes no source/CSS/tests/architecture document, performs no production mutation, and authorizes no commit or synchronization. D-029 remains Pending until independent review and explicit acceptance.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
