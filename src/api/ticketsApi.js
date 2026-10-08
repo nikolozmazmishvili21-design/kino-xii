@@ -15,3 +15,11 @@ export async function getTickets({ filter, token, signal } = {}) {
   // Domain/display usability is a separate pure check; refunded Orders are valid.
   return envelope.data;
 }
+
+// Preserve HTTP status/envelope for Refund outcome versus display classification.
+export function refundOrder(reference, { token, signal } = {}) {
+  if (typeof reference !== "string" || !reference.trim()) {
+    throw new TypeError("Refund requires an exact server Order reference.");
+  }
+  return apiRequest(`/orders/${encodeURIComponent(reference)}/refund`, { method: "POST", token, signal });
+}
