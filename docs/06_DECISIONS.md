@@ -3067,6 +3067,144 @@ This checkpoint changes docs/06_DECISIONS.md only. It implements no Refund, chan
 
 ---
 
+## D-030 — Refund request deadline and application-owned attempt retirement
+
+**Status:** Accepted
+**Proposed:** 2026-10-08
+
+### Scope, sources, and relationship to D-029
+
+Propose a Refund-specific client deadline and a narrowly scoped exception to Accepted D-029's actual Promise-settlement prerequisite. Independent review and explicit acceptance are required before implementation. D-001 through D-029 remain unchanged; appending this Pending proposal does not make the exception operative.
+
+Repository sources inspected: Assignment §§21–26; OpenAPI /tickets.get, /orders/{order}/refund.post, Order and applicable error responses; Master Spec §§16–20; Architecture §§5, 12–13, 20, 34, and 36; Accepted D-029. Existing client.js awaits Fetch and response-body consumption and forwards AbortSignal, but has no deadline. ticketsApi/useTickets currently own reads only. AuthProvider/AppShell and bookingRuntime/orderOperations provide relevant account, continuation, and synchronous ownership patterns; they do not already implement this Refund policy. Refund coordination remains separate from OPEN_BOOKING, Profile access descriptors, and booking mutation rules.
+
+If accepted, D-030 §C's completed deadline retirement substitutes for actual transport/body Promise settlement ONLY for a deadline-retired attempt. Expiry alone, requesting abort, dismissal, navigation, logout, or an ordinary still-pending request does not qualify. The precise D-029 cross-references are:
+
+| D-029 location | Deadline-only qualification |
+| --- | --- |
+| §B paragraph beginning "Use one active confirmed continuation", specifically "at most one actively pending client-owned Refund POST in the application runtime, including across account changes" | At most one active application-owned POST remains the limit. Only a deadline-expired attempt fully retired under D-030 §C releases application ownership even if its underlying transport Promise remains unresolved. Ordinary pending attempts still own the slot; synchronous acquisition and owner-only release remain required. |
+| §B lifecycle-table rows "Network/body-read failure, unrecognized identity/status, or unknown server outcome", "Explicit Check refund status after the client request has settled", and "Pending Close or leaving My Tickets context" | Completed deadline retirement permits uncertain/read-recovery state and ends that attempt's application lock without actual transport settlement; no automatic POST or consent revival. |
+| §B lifecycle-table row "Fresh exact usable paid/Upcoming/refundable target in uncertainty verification and no actively pending client POST" | Only a fully retired deadline-expired attempt is excluded from application-owned pending work despite an unresolved transport Promise. retry_available still requires no other active application-owned POST and all existing fresh factual verification guards; this adds no recovery permission or automatic POST. |
+| §C paragraph beginning "Open confirmation only from an actual usable Order", specifically "absence of any actively pending client-owned POST" | The absence check concerns application ownership: only completed D-030 §C retirement of a deadline-expired attempt ends that ownership despite an unresolved transport Promise. Every new dispatch must still acquire the synchronous lock and satisfy the unchanged current identity, consent, eligibility, and existing warned-reconfirmation guards. |
+| §F opening paragraph ("enter uncertain after local request settlement"), prerequisite paragraph beginning "Before verification can authorize a renewed attempt", and eligible-paid verification-table row ("settled-request/account guards above") | Completed deadline retirement satisfies only the local-settlement prerequisite. The authorizing GET must start after retirement, with the same account/current auth, exact identity, fresh eligibility, empty application slot, and NEW warned confirmation still required. |
+| §G paragraph beginning "A pending dismissal" and account-change paragraph beginning "Expected auth expiry", specifically "Any still-active client POST retains the runtime dispatch lock across that account change" | A detached/account-changed attempt keeps ownership until normal settlement OR completed deadline retirement. Dismissal/account change never triggers retirement itself. |
+| §H paragraph beginning "Do not parse messages", specifically the requirement for "Section F fresh verification, client-settlement, warning, and NEW confirmation rules" | The inherited Section F client-settlement prerequisite alone may be satisfied by completed deadline retirement when prior uncertainty concerns that retired attempt. Refusal treatment and every other renewed-attempt guard remain unchanged. |
+| §J test bullet beginning "Ambiguous POST plus refunded/eligible-paid/ineligible/inconclusive verification" | An ordinary still-pending client POST continues to block another POST. A deadline-retired attempt is no longer application-owned pending work; fresh post-retirement verification and NEW warned confirmation replace actual settlement for that case only. |
+
+D-029 §D's outcome rules and §G's paragraph beginning "For detached settlement" continue to govern normally settled, unretired attempts. D-030 §D instead fences ALL results arriving after deadline retirement, including a late 200; it does not erase a success already accepted before expiry. D-029 §E's definite-401 budget, all normal 200/422/other settlement behavior, account ownership, and no-automatic-uncertain-replay rules remain unchanged. This exception does not qualify GET settlement or any unrelated mutation policy. No earlier decision is rewritten or generally superseded.
+
+### A. Proposed 30-second client wait budget
+
+Use a 30,000 ms frontend wait budget for each actually dispatched Refund POST, from dispatch through complete response-body consumption and delivery of the resulting response/error to the coordinator. Receiving headers or a status alone does not complete this budget. Do not start it while confirmation, Login, or GET verification is waiting; do not reset it on headers, modal changes, remounts, or account changes. A separately permitted new POST, including D-029's bounded definite-401 continuation, gets its own budget and unique identity.
+
+Thirty seconds is a proposed Kino XII frontend policy, not an OpenAPI value, backend SLA, refund cutoff, or assertion that most requests complete within that time. Its rationale is a finite client wait with time for a slow response; no repository latency evidence establishes it as optimal. It can time out a legitimate slow success and increase uncertainty/recovery work. Review may change this value without inventing server behavior.
+
+Use an injectable monotonic elapsed-time clock, preferably performance.now(), with an injectable timer for deterministic tests. Capture dispatch time and deadline in the same clock/time-origin domain; elapsed time is current monotonic time minus dispatch time, and the deadline is dispatch time plus 30,000 ms. Do not use Date.now(), calendar timestamps, manual/system/NTP wall-clock adjustments, or a mix of clock domains to decide elapsed time or expiry. No remount resets the clock origin or deadline. [High Resolution Time clock specification](https://www.w3.org/TR/hr-time-3/#dfn-monotonic-clock)
+
+Timers are wake-up mechanisms; the stored monotonic deadline determines expiry. Browser execution, background throttling, freezing, and sleep can delay callbacks. Browser/platform sleep-ticking differences can also extend real elapsed wait when the monotonic clock pauses during sleep; this policy promises no exact 30-second wall-time bound. On resumed execution, timer, transport-outcome, and new-dispatch paths check the same clock/deadline before admitting work. If a timer fires before that clock reaches the deadline, reschedule only the remaining monotonic budget without resetting dispatch time or entering a busy loop; do not manufacture elapsed sleep time from wall-clock changes. An outcome already accepted before expiry remains normally settled; otherwise elapsed time at or beyond the deadline takes the expiry path even if the timer callback has not run. Define the observable boundary at coordinator admission; do not guess when a response became available while JavaScript was unable to observe it. [HTML timer specification](https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers), [High Resolution Time sleep-behavior issue](https://github.com/w3c/hr-time/issues/115)
+
+### B. Three distinct settlement facts
+
+| Fact | Meaning and limits |
+| --- | --- |
+| Actual transport Promise settlement | Fetch plus the API wrapper's body-consumption operation resolves or rejects. Fetch's initial Promise may already be fulfilled at headers while body consumption is still pending. Local settlement supplies no proof of backend rollback or completion. |
+| Deadline-triggered application-owned retirement | The coordinator permanently ends this attempt's application authority and settles its bounded application result as uncertain, without waiting for the underlying transport Promise. This is an explicit policy transition, not a claim that the transport settled. |
+| Backend mutation settlement | Whether the server refused, completed, or is still executing the refund. Deadline expiry, abort, application retirement, and a paid GET do not establish this fact. |
+
+AbortController requests client-side cancellation. Native Fetch abort rejects a pending Fetch Promise and errors a readable response body; rejecting an already fulfilled Fetch Promise does not reverse its fulfillment. An adapter/mock or surrounding Promise may remain pending despite an aborted signal. Retirement must therefore not depend on abort-induced rejection. A timeout race alone neither cancels nor settles the losing transport operation. [Fetch Standard](https://fetch.spec.whatwg.org/#abort-fetch)
+
+A complete current outcome admitted before expiry retains D-029 behavior unchanged: matching HTTP 200/refunded evidence and separate card adoption, definite-401 bounded continuation, 422 refusal, other received rejections, and ordinary ambiguity classification. Normal settlement finalizes only the owning request and cancels its timer. D-030 does not reinterpret a normal 401 as uncertainty or change normal success/refusal rules.
+
+### C. Exact deadline-retirement rule
+
+The stable app-shell Refund runtime owns one active application attempt across all accounts. Acquire its POST slot synchronously before notifying subscribers; recheck D-029 account/auth/context/consent/eligibility guards before immediate transport dispatch. Dispatch must use the captured attempt identity and AbortSignal. No deferred factory, effect, adapter retry, or retired callback may initiate an HTTP POST later.
+
+Each dispatched attempt records its unique request identity, operation/consent generation, originating account, private auth guard, exact returned reference, captured Order/session IDs, dispatch deadline, controller, and terminal disposition. Credentials remain private to dispatch/guards, never in UI state, continuation descriptors, logs, probes, storage, or URLs. Keep no global Orders cache.
+
+At deadline, perform this once-only transition synchronously, with no await and no subscriber notification between its ownership steps:
+
+1. Check that this request is still unfinalized and owns the active POST slot. A normally settled or previously retired request's timer is a no-op; it must not inspect or change a newer attempt.
+2. Claim the terminal deadline disposition before invoking abort or other reentrant callbacks. Permanently fence transport settlement, auth effects, consent, and presentation effects for this request.
+3. Revoke its original consent and any automatic 401 continuation permission. Record uncertain with minimal private originating account/reference/ID evidence; preserve any earlier uncertainty. Invalidate the affected account's Tickets read/eligibility generations and obsolete its competing reads as in D-029; apply §G's account-isolation and safe-restart requirements if an existing shared barrier also affects the current account's read.
+4. Request abort through this attempt's controller. Keep the slot owned during the abort call so synchronous abort listeners cannot start competing work. Abort failure or absent rejection does not undo the fence or prevent guarded finalization.
+5. Clear its timer and retire only the slot whose request identity still matches. Settle the bounded application result once as deadline uncertainty without awaiting the underlying transport. Only after the fence, uncertainty, and owner-only release are established may subscribers observe the transition.
+
+Acquiring a later slot cannot erase prior uncertainty. Timer, fulfillment, rejection, and cleanup callbacks must use request identity rather than unconditionally setting a shared pending flag to false. An old callback cannot release a newer slot, reclaim ownership, or dispatch a POST. The deadline transition is coordinator-owned; a dialog unmount is not its trigger.
+
+### D. Late results and rejection handling
+
+Attach fulfillment and rejection observers to the full transport/body Promise immediately when dispatch creates it; also handle synchronous transport throws and rejection of any derived observer Promise. Keep observers capable of consuming a rejection after retirement. Do not leave the losing branch of a deadline race unobserved or create an unhandled rejection through detached finally/then chains.
+
+After deadline retirement, late HTTP 200, 401, 422, 500, malformed responses, body failures, abort rejection, and other rejections are consumed as obsolete transport outcomes. They cannot adopt an Order, erase uncertainty, change a newer phase, expire auth, open Login, restore consent, notify/focus obsolete UI, release another lock, or POST. Discard protected late response data; factual recovery uses a fresh guarded GET instead. A late 200 alone does not become this retired attempt's displayed success. This differs from D-029's normal detached settlement, which remains applicable before deadline retirement.
+
+Exactly one terminal application disposition wins. Abort rejection following a claimed deadline cannot run normal refusal/auth/error logic; normal settlement accepted first makes its queued timeout harmless. Clearing the timer is cleanup, while identity and terminal guards remain necessary for callbacks already queued.
+
+### E. Recovery after deadline retirement
+
+A deadline-retired attempt qualifies for D-029 §F factual verification and reconfirmation even if the underlying transport/body Promise has not settled. This is the narrowly scoped exception proposed here, not a relabeling of transport state.
+
+Offer explicit Check refund status: fresh unfiltered GET /tickets, initiated after completed application retirement, under the same authenticated originating account and current auth/read generation. A GET begun before retirement, including during the POST, cannot authorize a renewed attempt. Repeated checks and authentication are read recovery only. D-029's bounded read-only GET-401 continuation applies, without POST consent; exhausted recovery cannot reopen an automatic Login loop through the generic Profile gate.
+
+| Fresh verification | Permitted result |
+| --- | --- |
+| Exactly one matching exact Order.reference reports refunded, with applicable identity guards | Preserve factual refunded authority; restore incomplete display under D-029 §D. No POST and no attribution to a particular attempt. |
+| Exactly one matching exact reference has usable corresponding Order/session identity and complete coherent display data, status paid, isUpcoming === true, and isRefundable === true | retry_available only if no application-owned POST is active and all current guards hold. Preserve uncertainty; offer NEW warned confirmation. |
+| Paid but Past/non-refundable, missing/duplicate reference, identity mismatch, malformed/contradictory data, or failed GET | No new POST. Preserve uncertainty and the applicable read-only retry/blocked state from D-029. |
+
+Use D-029 §F's warning in the renewed confirmation: "We couldn't confirm the earlier refund. Your tickets currently show this order as paid and refundable, but the earlier request may still complete. Confirming sends a new refund request." It must be visible before the confirm control; no default acceptance or guaranteed-safe claim.
+
+A NEW explicit confirmation creates new consent and request identities. Immediately before dispatch, recheck same current account/auth, semantic My Tickets context, exact reference/captured IDs, fresh unsuperseded verification, coherent server eligibility, consent, and an empty application slot. Changed authority requires fresh verification. Canceling the new confirmation preserves prior uncertainty. Never automatically repeat the uncertain POST from timeout, abort, GET completion, login, mounting, or eligible flags.
+
+A new confirmed attempt has its own normal D-029 rules, including its own bounded definite-401 handling. A new 422 shows the actual server message and refreshes structured Tickets facts; do not parse the message to infer status. Prior uncertainty survives that refusal or a paid snapshot. Another ambiguous/deadline outcome returns to factual recovery, never a retry loop.
+
+### F. Concurrency risk and proposed tradeoff
+
+The guarantee is at most one active application-owned Refund attempt in this runtime. A retired transport may remain unresolved and earlier server work may overlap a later explicitly confirmed POST, including across account changes. Abort/fencing prevents further application authority; it cannot prove physical transport shutdown or server non-overlap.
+
+OpenAPI documents an already-refunded 422 refusal, but no idempotency key, transactional atomicity, server serialization, exactly-once execution, or authoritative ordering-after-write guarantee. That refusal supports documented sequential rejection; it does not prove that concurrently arriving requests cannot both act or that financial effects cannot duplicate. A fresh paid GET is current eligibility evidence, not proof the earlier request failed or stopped. Do not invent a body, idempotency header/key, cancellation endpoint, backend timeout, or compensating mutation.
+
+Recommendation: accept bounded retirement as an availability and informed-consent policy consistent with D-029 §F's residual-risk recovery. It bounds client ownership and requires fresh evidence plus new warned consent; it does not bound backend execution or prove financial safety. Independent review must explicitly assess this residual risk. Repeated separately confirmed attempts can leave multiple unknown backend operations; the application lock does not cap that count once earlier attempts are retired.
+
+If that residual risk is unacceptable, reject the retirement exception and keep renewed POST blocked until actual full transport/body Promise settlement under D-029. Read-only status checks may provide factual feedback but cannot bypass that lock. A never-settling Promise can then block indefinitely. Even actual transport settlement supplies no backend-stop guarantee. Guaranteed backend non-overlap/exactly-once effects would require additional verified backend guarantees; neither policy option invents them. Pending review, D-029's existing settlement prerequisite remains authoritative.
+
+### G. Logout, dismissal, navigation, and lifetime
+
+- Modal dismissal remains available. It revokes continuation and detaches UI under D-029; it does not itself abort, retire, or reset the timer of a submitted POST.
+- Leaving semantic My Tickets context, including Personal Information at the same pathname, revokes unsubmitted/continuation/verification permission. The dispatched attempt retains its slot and deadline until normal settlement or the defined deadline retirement. Upcoming/Past changes within My Tickets do not reset them.
+- Ordinary remount/StrictMode cleanup cannot create consent, reset elapsed time, clear the lock, or replay POST. Stable runtime ownership and the shared Tickets read barrier survive.
+- Logout/account change immediately masks protected presentation and revokes consent, read-auth continuation, and eligibility snapshots. Keep only private minimal origin evidence. Do not await POST or borrow another account's credentials.
+- The originating request's deadline remains live across logout/account changes. It can retire its own slot without current-origin authentication, but cannot display origin details, expire the new account's auth, invalidate that account's consent, or release a newer slot.
+- Scope timeout read/eligibility invalidation to the affected originating account where possible. Account A's retirement must not silently cancel or permanently invalidate account B's active Tickets read. Check captured account ownership, current auth ownership, read request identity, and the applicable generation before adopting data OR applying read-error/auth effects; stale A responses cannot populate B, expire B's auth, or change B's read state.
+- If an existing shared generation/barrier also obsoletes the currently authenticated account's active Tickets read, its attached reader must safely restart under that account's current auth with a new request identity and the updated generation. An obsolete loading state cannot remain indefinitely: a current read must run and expose the existing success/empty/error/auth-required states; restart failure must surface the appropriate existing recovery state. Never reuse A's credentials/data or auto-POST. Deduplicate restart for the affected account/invalidation generation; the replacement read captures the new generation, and obsolete read cleanup/error must not advance it again or repeatedly restart work. A retirement is finalized once, so repeated old callbacks cannot create a restart loop. Account-scoped generations or a small restart guard around an existing shared barrier are both acceptable; no global Orders cache or unrelated architecture rewrite is required.
+- Same-account return requires fresh guarded GET and, for renewed POST, NEW warned confirmation. Authentication, navigation back, or remount never restores old consent. Detached retirement does not automatically reopen a dialog, navigate, or focus.
+- No new browser-storage/URL persistence, reload replay, cross-tab/reload protection, Hold deletion, or local seat release is authorized. Timer/ledger loss on app teardown gives no settlement or rollback proof.
+
+### H. Required tests and implementation boundary
+
+Use injected clocks/timers and synthetic/mock transport only. Browser interception must be installed before navigation; fulfill known traffic and block unknown external API requests. Never forward production mutations or count skipped required cases as passes.
+
+Required deterministic coverage:
+
+- Timeout before headers; headers arrive but body consumption hangs; no normal classification from headers alone.
+- Never-settling Fetch/adapter Promise that ignores AbortSignal: application retirement completes, abort is requested, uncertainty remains, and no automatic POST occurs.
+- Abort-induced rejection and synchronous abort listener reentrancy: fencing precedes abort and owner-only release; no unhandled rejection or double finalization.
+- Normal complete 200, definite 401, 422 and other D-029 outcomes before expiry remain unchanged and clear their timer.
+- Delayed timer execution and deadline boundary races: overdue outcome/new-dispatch paths enforce expiry; an already accepted normal result wins. Forward/backward wall-clock adjustments with unchanged monotonic time do not change eligibility for deadline retirement. Mock paused-during-sleep monotonic time and an early timer wake-up: only remaining-budget scheduling occurs, without a reset, wall-clock fallback, or busy loop.
+- Late 200/401/422/500, malformed/body failure and rejection after retirement: no state adoption, stale auth expiry, Login, consent revival, focus, POST, or newer-lock release.
+- Double click/Enter, synchronous subscribers changing auth/context before dispatch, StrictMode and remount: at most one active application-owned dispatch.
+- Logout/account switch, same-account return, modal dismissal, route departure to another Profile panel, and subgroup navigation: deadlines persist and private origin data stays masked.
+- Account-isolation regression: A has a pending Refund; switch to B; B starts GET /tickets; A's deadline retires its attempt; B's Tickets still load correctly. Exercise account-scoped invalidation (B's read continues) and shared-barrier invalidation (one deduplicated restart using B's auth/new generation). Resolve obsolete A/B callbacks and repeated A timeout callbacks: no cross-account data/auth effects, permanent loading, newer-lock release, or repeated restart loop. Verify a restarted read's failure surfaces the existing error/auth recovery state.
+- Old queued timeout/settlement after a later attempt owns the slot: the later owner and its timer/consent are untouched.
+- Fresh GET initiated after retirement versus stale pre-retirement GET; refunded, eligible paid, ineligible, missing/duplicate/mismatched/inconsistent targets; GET failures and bounded read-only 401 recovery.
+- Eligible paid GET creates no POST; new explicit warned confirmation is required, guards are rechecked, earlier uncertainty survives cancellation/refusal/new timeout, and no automatic uncertain retry occurs.
+- Synthetic backend-work overlap demonstrates the limit of application ownership; tests must not claim idempotency, server cancellation/serialization, rollback, or exactly-once financial effects.
+
+Affected future implementation areas are Refund-specific runtime/lifecycle coordination, ticketsApi, guarded Tickets reads, AppShell/AuthProvider integration, confirmation/recovery presentation, and focused tests. This decision does not add a global API timeout, alter booking/payment policies, introduce a dependency, or prescribe unverified Figma styling.
+
+This checkpoint modifies docs/06_DECISIONS.md only. It implements no Refund, changes no application code/tests/other documentation, performs no production mutation, and authorizes no staging, commit, push, or sync. D-030 remains Pending for independent review and explicit acceptance.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:
