@@ -30,8 +30,6 @@
 .seat-selection__error p { margin: 0 0 12px; line-height: 1.3; }
 .seat-selection__error { display: flex; flex-wrap: wrap; gap: 12px; }
 .seat-selection__error p { flex-basis: 100%; }
-.seat-selection__checkout-content { display: flex; flex: 1; align-items: flex-end; padding-top: 24px; }
-.seat-summary__card--held p { margin: 0; font-size: 12px; color: var(--color-muted); }
 .seat-ticket-types__error { flex-basis: 100%; margin: 0; color: var(--color-accent); font-size: 12px; }
 .seat-ticket-types:disabled label, .seat-summary__remove:disabled { cursor: default; }
 .seat-selection__feedback { flex-shrink: 0; min-height: 16px; margin: 0; color: var(--color-muted); line-height: 16px; }

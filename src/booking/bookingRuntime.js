@@ -8,6 +8,7 @@ import { selectionConfiguration } from "./seatSelection.js";
 import { readBookingData } from "./useBookingReads.js";
 import { HOLD_COPY, canCreateHold, eligibleAssignment, holdSelection, isHoldId, remainingHoldMs, sameAssignments } from "./holdLifecycle.js";
 import { createHoldOperations } from "./holdOperations.js";
+import { createOrderOperations } from "./orderOperations.js";
 
 // One coordinator per BookingProvider. React observes this reducer store; identities
 // and locks change synchronously, before queued renders or repeated input events.
@@ -15,6 +16,7 @@ export function createBookingRuntime(dependencies) {
   const deps = { api: bookingApi, getSession, getSessionSeats, me, getToken, storage: createHoldStorage(), now: Date.now, ...dependencies };
   const scope = createBookingReadScope();
   let state = initialBookingState(), operation = null, requestId = 0, continuation = null, bootUser = null;
+  let orders;
   const listeners = new Set();
   const releases = new Set();
   const pendingCreates = new Map();
@@ -36,14 +38,15 @@ export function createBookingRuntime(dependencies) {
     && request.revision === state.selectionRevision);
   const begin = (extra = {}) => {
     const active = scope.active();
-    if (!active || !isCurrentAccount(active.expectedUser) || active.token !== deps.getToken() || operation) return null;
+    if (!active || !isCurrentAccount(active.expectedUser) || active.token !== deps.getToken() || operation
+      || orders?.blocksHoldMutation()) return null;
     operation = { ...active, token: deps.getToken(), revision: state.selectionRevision, requestId: ++requestId, ...extra };
     return operation;
   };
   const finish = (request) => { if (operation === request) operation = null; };
 
-  function release(reference, token, visibleInstance = null) {
-    if (!isHoldId(reference?.holdId) || !token) return Promise.resolve();
+  function release(reference, token, visibleInstance = null, ownerInstance = visibleInstance) {
+    if (!isHoldId(reference?.holdId) || !token || orders?.protectsHold(reference, ownerInstance)) return Promise.resolve();
     const key = `${reference.holdId}:${requestId}`;
     if (releases.has(key)) return Promise.resolve();
     releases.add(key);
@@ -64,20 +67,21 @@ export function createBookingRuntime(dependencies) {
     const expectedOwner = active?.expectedUser ?? continuation?.expectedUser;
     const token = validatedUser && deps.isCurrentUser(validatedUser)
       && (!expectedOwner || expectedOwner.id === validatedUser.id) ? deps.getToken() : null;
+    const orderPending = orders?.detach();
     operation = null;
-    if (discard) continuation = null;
-    if (abandon) deps.storage.clear();
+    if (discard) { continuation = null; orders?.cancelOrderReauth(); }
+    if (abandon || orderPending) deps.storage.clear();
     if (abandon && token && isHoldId(reference?.holdId)) patch({ hold: { phase: "releasing", data: null }, step: "seats" });
     scope.close();
     if (active) emit({ type: "CLOSE", instanceId: active.instanceId });
-    if (abandon) void release(reference, token);
-    if (abandon && previousReference?.holdId !== reference?.holdId) void release(previousReference, token);
+    if (abandon) void release(reference, token, null, active?.instanceId ?? null);
+    if (abandon && previousReference?.holdId !== reference?.holdId) void release(previousReference, token, null, active?.instanceId ?? null);
   }
   function suspend(sessionId) {
     close({ abandon: false, discard: false });
     deps.reauthenticate(sessionId);
   }
-  async function read(kind, { preserve = false, reconcile = false } = {}) {
+  async function read(kind, { preserve = false, reconcile = false, reauthenticate = true } = {}) {
     const request = scope.start(kind);
     const currentRead = () => scope.isCurrent(request, isCurrentAccount) && request.token === deps.getToken();
     if (!request || !currentRead()) return null;
@@ -99,7 +103,7 @@ export function createBookingRuntime(dependencies) {
       return data;
     } catch (error) {
       if (error?.name === "AbortError" || !currentRead()) return null;
-      if (error.status === 401) { continuation = null; suspend(sessionId); return null; }
+      if (error.status === 401 && reauthenticate) { continuation = null; suspend(sessionId); return null; }
       emit({ type: "READ_ERROR", ...identity, error });
       throw error;
     }
@@ -111,7 +115,10 @@ export function createBookingRuntime(dependencies) {
     return active;
   }
   const runtime = {
-    deps, scope, state: () => state, patch, current, begin, finish, read, release, suspend,
+    deps, scope, state: () => state, patch, emit, current, begin, finish, read, release, suspend,
+    hasHoldOperation: () => Boolean(operation), nextRequestId: () => ++requestId,
+    ownsBooking: (user) => Boolean(user && scope.active()?.expectedUser.id === user.id
+      && scope.active()?.token === deps.getToken() && isCurrentAccount(user)),
     configureDependencies(changes) { Object.assign(deps, changes); runtime.configure(); },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     setContinuation(value) { continuation = value; },
@@ -149,14 +156,32 @@ export function createBookingRuntime(dependencies) {
         selectionRevision: state.selectionRevision + 1, feedback: message });
     },
     close,
+    completeOrderFlow({ instanceId, sessionId, order } = {}) {
+      const active = scope.active();
+      if (!active || active.instanceId !== instanceId || state.instanceId !== instanceId
+        || state.sessionId !== sessionId || active.sessionId !== sessionId
+        || state.order.phase !== "success" || !order || state.order.data !== order
+        || !isCurrentAccount(active.expectedUser) || active.token !== deps.getToken()
+        || (deps.getUser?.() ?? active.expectedUser)?.profileComplete !== true) return false;
+      // Success already cleared Hold storage and consumed its authority. Finish
+      // presentation directly: never enter abandonment/release or reset another flow.
+      operation = null;
+      continuation = null;
+      scope.close();
+      emit({ type: "CLOSE", instanceId });
+      return true;
+    },
+    logout() { orders.logout(); close(); },
     cancelContinuation() { close(); },
     newIntent(sessionId) {
+      const newOrderIntent = orders.hasCurrentOrder();
+      orders.cancelOrderReauth();
       const reference = deps.storage.read(), expectedOwner = continuation?.expectedUser;
       continuation = null;
       // A newer explicit intent supersedes an unresolved POST and its /me
       // remediation even for the same session. Verified restoration can still
       // be shared; rejected creation must never navigate for this newer intent.
-      if (scope.active() && (state.sessionId !== sessionId || pendingCreates.has(operation?.requestId))) close();
+      if (scope.active() && (newOrderIntent || state.sessionId !== sessionId || pendingCreates.has(operation?.requestId))) close();
       else if (!scope.active() && reference && reference.sessionId !== sessionId) {
         deps.storage.clear();
         const validatedUser = deps.getUser?.();
@@ -164,6 +189,7 @@ export function createBookingRuntime(dependencies) {
       }
     },
     syncAuth(user, allowed) {
+      orders.syncOrderAuth(user);
       if (!allowed) {
         if (scope.active()) close({ abandon: false, discard: false });
         return;
@@ -171,7 +197,7 @@ export function createBookingRuntime(dependencies) {
       if (scope.active() && (!isCurrentAccount(scope.active().expectedUser) || scope.active().token !== deps.getToken())) close();
       if (bootUser === user.id) return;
       bootUser = user.id;
-      if (!scope.active() && !continuation) {
+      if (!scope.active() && !continuation && !orders.hasOrderReauth()) {
         const reference = deps.storage.read();
         if (reference) {
           open(reference.sessionId, user, null);
@@ -180,10 +206,15 @@ export function createBookingRuntime(dependencies) {
       }
     },
     async enter(sessionId, user, opener) {
+      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return;
       if (scope.active()?.sessionId === sessionId && ["restoring", "active"].includes(state.hold.phase)) return;
-      if (scope.active()?.sessionId === sessionId && state.recovery?.retryable) return runtime.restore(state.recovery.reference, state.recovery);
+      if (scope.active()?.sessionId === sessionId && state.recovery?.retryable) {
+        return state.recovery.order ? orders.verifyOrderHold(state.recovery.reference, state.recovery)
+          : runtime.restore(state.recovery.reference, state.recovery);
+      }
       const resume = continuation;
       continuation = null;
+      const orderResume = orders.takeOrderReauth(sessionId, user);
       if (scope.active()) close();
       const saved = deps.storage.read();
       if (saved && saved.sessionId !== sessionId) {
@@ -191,14 +222,16 @@ export function createBookingRuntime(dependencies) {
         void release(saved, deps.getToken());
       }
       open(sessionId, user, opener);
-      if (resume && resume.sessionId === sessionId && resume.expectedUser.id === user.id) {
+      if (orderResume) await orders.resumeOrder(orderResume);
+      else if (resume && resume.sessionId === sessionId && resume.expectedUser.id === user.id) {
         await runtime.resume(resume);
       } else if (saved?.sessionId === sessionId) await runtime.restore(saved);
       else await Promise.allSettled([read("sessionRead"), read("seatMapRead")]);
     },
-    edit(type, values) { emit({ type, instanceId: state.instanceId, options: deps.options(), ...values }); },
+    edit(type, values) { if (!orders.blocksHoldMutation()) emit({ type, instanceId: state.instanceId, options: deps.options(), ...values }); },
     configure() {
       emit({ type: "CONFIG_CHANGED", instanceId: state.instanceId, options: deps.options() });
+      orders.invalidateChangedContext();
       if (operation && operation.revision !== state.selectionRevision) {
         const request = operation;
         operation = null;
@@ -207,10 +240,10 @@ export function createBookingRuntime(dependencies) {
             reference: request.previous ? { holdId: request.previous.holdId, sessionId: request.sessionId } : null } });
       }
     },
-    canNext: (replayProof = null) => !operation && canCreateHold(state, deps.options(), deps.now(), replayProof),
+    canNext: (replayProof = null) => !operation && !orders.blocksHoldMutation() && canCreateHold(state, deps.options(), deps.now(), replayProof),
     back() {
       const hold = state.hold.data;
-      if (!hold || state.hold.phase !== "active" || operation) return;
+      if (!hold || state.hold.phase !== "active" || operation || orders.blocksHoldMutation()) return;
       if (remainingHoldMs(hold.expiresAt, deps.now()) <= 0) { runtime.expire(hold); return; }
       patch({ step: "seats", selection: holdSelection(hold), selectionRevision: state.selectionRevision + 1, feedback: null });
     },
@@ -219,6 +252,7 @@ export function createBookingRuntime(dependencies) {
         || scope.active().token !== deps.getToken()
         || remainingHoldMs(hold.expiresAt, deps.now()) > 0) return false;
       operation = null;
+      orders.detach();
       deps.storage.clear();
       patch({ hold: { phase: "expired", data: null }, step: "seats", selection: {}, recovery: null,
         selectionRevision: state.selectionRevision + 1, feedback: HOLD_COPY.expired });
@@ -226,12 +260,15 @@ export function createBookingRuntime(dependencies) {
       return true;
     },
     async startOver() {
+      if (orders.blocksHoldMutation()) return;
       const reference = state.recovery?.reference ?? state.hold.data;
       const previousReference = state.recovery?.previousReference;
       const active = scope.active();
       if (!active || !isCurrentAccount(active.expectedUser) || active.token !== deps.getToken()) return;
       operation = null;
       continuation = null;
+      orders.cancelOrderReauth();
+      orders.clearOrderError();
       deps.storage.clear();
       patch({ hold: { phase: "idle", data: null }, step: "seats", recovery: null, selection: {},
         selectionRevision: state.selectionRevision + 1, fieldErrors: {}, contested: [], feedback: null, releaseWarning: null, startedOver: true });
@@ -240,6 +277,8 @@ export function createBookingRuntime(dependencies) {
       await Promise.allSettled([read("sessionRead", { preserve: true }), read("seatMapRead", { preserve: true })]);
     },
     retry(kind) {
+      if (orders.blocksHoldMutation()) return Promise.resolve();
+      if (state.recovery?.order) return orders.verifyOrderHold(state.recovery.reference, state.recovery);
       if (state.recovery?.retryable) return runtime.restore(state.recovery.reference, state.recovery);
       if (state.recovery) return Promise.resolve();
       if (operation) return Promise.resolve();
@@ -251,5 +290,15 @@ export function createBookingRuntime(dependencies) {
     profileMessage: (userId) => continuation?.kind === "profile" && continuation.expectedUser.id === userId ? continuation.feedback : null,
   };
   Object.assign(runtime, createHoldOperations(runtime));
+  orders = createOrderOperations(runtime);
+  const restoreHold = runtime.restore;
+  runtime.restore = (reference, options) => orders.canRestoreHold(reference) ? restoreHold(reference, options) : Promise.resolve();
+  Object.assign(runtime, {
+    canSubmitOrder: orders.canSubmitOrder, submitOrder: orders.submitOrder,
+    clearOrderError: orders.clearOrderError, orderSnapshot: orders.snapshot,
+    subscribeOrder: orders.subscribe, dismissOrderNotice: orders.dismissOrderNotice,
+    hasPendingOrderForSession: orders.hasPendingOrderForSession,
+    prepareTicketsRecovery: orders.prepareTicketsRecovery, consumeTicketsRecovery: orders.consumeTicketsRecovery,
+  });
   return runtime;
 }

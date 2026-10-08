@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { normalizeMobile, validateDateOfBirth, validateProfile } from "../src/validation/profileValidation.js";
 import { createProfilePayload, updateProfile } from "../src/api/profileApi.js";
 import { isProfileDirty, profileDraft, profileEligibility } from "../src/profile/profileForm.js";
+import { ROUTES, profileTicketsPath, profileTab } from "../src/routing/routes.js";
+
+test("Profile URLs select one tab with a safe default and stable Tickets path", () => {
+  assert.equal(ROUTES.profile, "/profile"); assert.equal(profileTicketsPath(), "/profile?tab=tickets");
+  for (const search of ["", "?tab=whatever", "?tab=Tickets", "?other=tickets"]) assert.equal(profileTab(search), "information");
+  assert.equal(profileTab("?tab=tickets"), "tickets"); assert.equal(profileTab("?other=1&tab=tickets"), "tickets");
+});
 
 const draft = { fullName: "Jane Dolidze", mobileNumber: "599 123 456", dateOfBirth: "2000-01-01", preferredVenueId: "" };
 const options = { baseline: draft, venues: [{ id: 4, name: "API venue" }], today: new Date(2026, 9, 6) };

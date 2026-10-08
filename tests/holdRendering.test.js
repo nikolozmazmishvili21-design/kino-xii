@@ -1,5 +1,6 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import { MemoryRouter } from "react-router-dom";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
@@ -10,10 +11,10 @@ import { ApiError } from "../src/api/client.js";
 // a DOM/test dependency. Live browser focus/layout verification is separate.
 let server, context, Summary, Checkout, SeatMap, Timer, Profile, authContext, profileContext, bootstrapContext;
 before(async () => {
-  server = await createServer({ cacheDir: "node_modules/.cache/kino-profile-qa/vite-hold-rendering", server: { middlewareMode: true, hmr: false, watch: null }, appType: "custom" });
+  server = await createServer({ cacheDir: "node_modules/.cache/kino-profile-qa/vite-hold-rendering", server: { middlewareMode: true, hmr: false, ws: false, watch: null }, appType: "custom" });
   context = (await server.ssrLoadModule("/src/booking/BookingContext.js")).BookingContext;
   Summary = (await server.ssrLoadModule("/src/components/booking/SelectedSeatsSummary.jsx")).default;
-  Checkout = (await server.ssrLoadModule("/src/components/booking/CheckoutHandoff.jsx")).default;
+  Checkout = (await server.ssrLoadModule("/src/components/booking/Checkout.jsx")).default;
   SeatMap = (await server.ssrLoadModule("/src/components/booking/SeatMap.jsx")).default;
   Timer = (await server.ssrLoadModule("/src/components/booking/HoldTimer.jsx")).default;
   Profile = (await server.ssrLoadModule("/src/pages/ProfilePage.jsx")).default;
@@ -34,17 +35,19 @@ const hold = { holdId: "11111111-2222-3333-4444-555555555555", sessionId: 10, is
 function value(overrides = {}) {
   return { filterOptions: options, config: { ready: true, types: options.ticketTypes, max: 3 }, canNext: true,
     next: () => {}, back: () => {}, removeSeat: () => {}, setTicket: () => {},
-    state: { sessionRead: { data: session }, seatMapRead: { data: map }, selection: { 1: { ticketTypeSlug: "adult" } }, hold: { phase: "active", data: hold }, fieldErrors: {}, recovery: null }, ...overrides };
+    state: { order: { phase: "idle", feedback: null }, sessionRead: { data: session }, seatMapRead: { data: map }, selection: { 1: { ticketTypeSlug: "adult" } }, hold: { phase: "active", data: hold }, fieldErrors: {}, recovery: null }, ...overrides };
 }
-const render = (Component, booking) => renderToStaticMarkup(createElement(context.Provider, { value: booking }, createElement(Component)));
+const render = (Component, booking) => renderToStaticMarkup(createElement(authContext.Provider, { value: { user: {} } }, createElement(context.Provider, { value: booking }, createElement(Component))));
 const seatTag = (html, id) => html.match(new RegExp(`<button[^>]*id="booking-seat-${id}"[^>]*>`))?.[0];
 
-test("Checkout shell renders server summary, current Checkout, Back only, and no payment/order controls", () => {
+test("real Checkout preserves server Hold summary, Checkout progress and Back", () => {
   const html = render(Checkout, value());
   assert.match(html, /aria-current="step">CHECKOUT/);
   assert.match(html, /A1/); assert.match(html, /Server Adult/); assert.match(html, /₾ 7\.13/); assert.match(html, /₾ 100\.47/);
-  assert.match(html, /<button[^>]*id="booking-back"[^>]*>Back<\/button>/); assert.equal((html.match(/<button/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /<(?:input|form|select)|Next: Checkout|Purchase|Card Number|Confirm|POST|orders/i);
+  assert.match(html, /<button[^>]*id="booking-back"[^>]*>Back<\/button>/);
+  assert.match(html, /<form/); assert.match(html, /Pay &amp; Complete Order/);
+  assert.equal((html.match(/<input/g) ?? []).length, 6);
+  assert.doesNotMatch(html, /Next: Checkout/);
 });
 test("pending draft keeps native Next/remove/radio group disabled and displays authoritative held prices", () => {
   const booking = value(); booking.state = { ...booking.state, hold: { phase: "creating", data: hold } }; booking.canNext = false;
@@ -96,7 +99,7 @@ test("User adopted by hold remediation hydrates the existing Profile status and 
       createElement(authContext.Provider, { value: { status: "authenticated", mutation: null, user: authUser } },
         createElement(profileContext.Provider, { value: { continuation: null } },
           createElement(bootstrapContext.Provider, { value: { filterOptions: { venues: [freshUser.preferredVenue] } } },
-            createElement(context.Provider, { value: { profileRemediationMessage: runtime.profileMessage(authUser.id) } }, createElement(Profile))))),
+            createElement(context.Provider, { value: { profileRemediationMessage: runtime.profileMessage(authUser.id) } }, createElement(MemoryRouter, null, createElement(Profile)))))),
     );
     assert.match(html, profileComplete ? /Profile Complete/ : /Profile incomplete/);
     if (profileComplete) assert.doesNotMatch(html, /Profile incomplete|Booking is currently unavailable\./);

@@ -11,16 +11,18 @@ function BookingProbe() {
   const booking = useBooking();
   const entry = useBookingEntry();
   useEffect(() => {
-    window.holdQa = { open: entry.openBooking, close: booking.close };
+    window.holdQa = { open: entry.openBooking, close: booking.close, expire: () => booking.expire(booking.state.hold.data) };
   }, [booking, entry]);
   return <output id="booking-probe" hidden>{JSON.stringify({
     state: booking.state, canNext: booking.canNext,
     profileIntent: booking.profileRemediationMessage,
+    ticketsIntent: booking.ticketsRecoveryIntent, pendingOrder: booking.hasPendingOrderForSession,
   })}</output>;
 }
 
 export default function HoldRoutes() {
   return <BrowserRouter><Routes><Route element={<AppShell />}>
+    <Route path="/" element={<BookingProbe />} />
     <Route path="/sessions" element={<BookingProbe />} />
     <Route path="/profile" element={<><BookingProbe /><ProfilePage /></>} />
   </Route></Routes></BrowserRouter>;

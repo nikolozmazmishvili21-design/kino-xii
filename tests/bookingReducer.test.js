@@ -19,6 +19,45 @@ function loaded() {
   return state;
 }
 
+test("Order reducer transitions contain only phase, returned data and feedback", () => {
+  let state = loaded();
+  assert.deepEqual(state.order, { phase: "idle", data: null, feedback: null });
+  state = reduce(state, { type: "ORDER_SUBMITTING", sessionId: 10 });
+  assert.equal(state.order.phase, "submitting");
+  state = reduce(state, { type: "ORDER_ERROR", sessionId: 10, feedback: "Server feedback", fields: { ignored: "local-only" } });
+  assert.deepEqual(state.order, { phase: "error", data: null, feedback: "Server feedback" });
+  state = reduce(state, { type: "ORDER_RESET", sessionId: 10 });
+  assert.equal(state.order.phase, "idle");
+  state = reduce(state, { type: "ORDER_SUBMITTING", sessionId: 10 });
+  state = reduce(state, { type: "ORDER_UNCERTAIN", sessionId: 10, feedback: "Uncertain" });
+  assert.equal(state.order.phase, "uncertain"); assert.equal(state.hold.data, null);
+  assert.equal(reduce(state, { type: "ORDER_RESET", sessionId: 10 }), state);
+});
+
+test("Order success removes Hold authority and blocks edits and terminal reset", () => {
+  let state = reduce(loaded(), { type: "TOGGLE_SEAT", seatId: 1 });
+  state = reduce(state, { type: "ORDER_SUBMITTING", sessionId: 10 });
+  for (const action of [{ type: "REMOVE_SEAT", seatId: 1 }, { type: "SET_TICKET", seatId: 1, slug: "student" }]) assert.equal(reduce(state, action), state);
+  const order = { reference: "Server authority" };
+  state = reduce(state, { type: "ORDER_SUCCESS", sessionId: 10, order });
+  assert.equal(state.order.data, order); assert.equal(state.step, "confirmation");
+  assert.equal(state.hold.data, null); assert.deepEqual(state.selection, {});
+  for (const type of ["ORDER_RESET", "ORDER_SUBMITTING", "ORDER_ERROR", "ORDER_UNCERTAIN"]) {
+    assert.equal(reduce(state, { type, sessionId: 10, detached: true }), state);
+  }
+});
+
+test("Order reducer rejects obsolete instance/session and requires explicit guarded pending detach", () => {
+  let state = reduce(loaded(), { type: "ORDER_SUBMITTING", sessionId: 10 });
+  for (const type of ["ORDER_SUCCESS", "ORDER_ERROR", "ORDER_UNCERTAIN", "ORDER_RESET"]) {
+    assert.equal(reduce(state, { type, instanceId: 0, sessionId: 10 }), state);
+    assert.equal(reduce(state, { type, sessionId: 11 }), state);
+  }
+  assert.equal(reduce(state, { type: "ORDER_RESET", sessionId: 10 }), state);
+  state = reduce(state, { type: "ORDER_RESET", sessionId: 10, detached: true });
+  assert.equal(state.order.phase, "idle");
+});
+
 test("local toggle defaults Adult, type changes and summary removal share one selection source", () => {
   let state = reduce(loaded(), { type: "TOGGLE_SEAT", seatId: 1 });
   assert.deepEqual(state.selection, { 1: { ticketTypeSlug: "adult" } });

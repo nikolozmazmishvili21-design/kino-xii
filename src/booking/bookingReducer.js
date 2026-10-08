@@ -3,7 +3,8 @@ import { findSeat, hasPreviewContext, selectionConfiguration } from "./seatSelec
 const emptyRead = () => ({ status: "idle", data: null, error: null, attempt: 0 });
 export function initialBookingState() {
   return { sessionId: null, instanceId: 0, sessionRead: emptyRead(), seatMapRead: emptyRead(), selection: {}, feedback: null,
-    step: "seats", hold: { phase: "idle", data: null }, selectionRevision: 0, contested: [], fieldErrors: {}, recovery: null, releaseWarning: null, startedOver: false };
+    step: "seats", hold: { phase: "idle", data: null }, order: { phase: "idle", data: null, feedback: null },
+    selectionRevision: 0, contested: [], fieldErrors: {}, recovery: null, releaseWarning: null, startedOver: false };
 }
 
 export function bookingReducer(state, action) {
@@ -13,6 +14,27 @@ export function bookingReducer(state, action) {
   if (action.type === "CLOSE") return initialBookingState();
   // The provider-owned coordinator guards operation identity before these transitions.
   if (action.type === "HOLD_TRANSITION") return { ...state, ...action.patch };
+  // The coordinator checks request identity before dispatch; the reducer also
+  // rejects obsolete instance/session actions and impossible terminal resets.
+  if (action.type.startsWith("ORDER_")) {
+    if (action.sessionId !== state.sessionId) return state;
+    if (action.type === "ORDER_SUBMITTING" && ["idle", "error"].includes(state.order.phase)) {
+      return { ...state, order: { phase: "submitting", data: null, feedback: null } };
+    }
+    if (action.type === "ORDER_RESET" && (["idle", "error"].includes(state.order.phase)
+      || (action.detached === true && state.order.phase === "submitting"))) {
+      return { ...state, order: { phase: "idle", data: null, feedback: null } };
+    }
+    if (state.order.phase !== "submitting") return state;
+    if (action.type === "ORDER_ERROR") return { ...state, order: { phase: "error", data: null, feedback: action.feedback ?? null } };
+    if (["ORDER_SUCCESS", "ORDER_UNCERTAIN"].includes(action.type)) {
+      const success = action.type === "ORDER_SUCCESS";
+      return { ...state, order: { phase: success ? "success" : "uncertain", data: success ? action.order : null, feedback: action.feedback ?? null },
+        hold: { phase: "idle", data: null }, step: success ? "confirmation" : "checkout",
+        selection: {}, selectionRevision: state.selectionRevision + 1, recovery: null, contested: [], fieldErrors: {}, feedback: null };
+    }
+    return state;
+  }
   if (action.type === "READ_START") {
     const key = action.kind;
     if (action.sessionId !== state.sessionId || action.attempt <= state[key].attempt) return state;
@@ -33,7 +55,8 @@ export function bookingReducer(state, action) {
     }
     return state;
   }
-  if (["creating", "restoring", "releasing", "uncertain"].includes(state.hold.phase) || state.recovery) return state;
+  if (["submitting", "success", "uncertain"].includes(state.order.phase)
+    || ["creating", "restoring", "releasing", "uncertain"].includes(state.hold.phase) || state.recovery) return state;
   if (action.type === "REMOVE_SEAT") {
     const selection = { ...state.selection };
     delete selection[action.seatId];

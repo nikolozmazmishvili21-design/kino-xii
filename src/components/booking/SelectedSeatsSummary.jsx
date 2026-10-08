@@ -5,8 +5,8 @@ import removeIcon from "../../assets/icons/seat-remove.svg";
 import { sameAssignments } from "../../booking/holdLifecycle.js";
 
 export default function SelectedSeatsSummary() {
-  const { state, filterOptions, config, removeSeat, setTicket, next, canNext } = useBooking();
-  const pending = ["creating", "restoring", "releasing", "uncertain"].includes(state.hold.phase) || Boolean(state.recovery);
+  const { state, filterOptions, config, removeSeat, setTicket, next, canNext, hasPendingOrderForSession } = useBooking();
+  const pending = hasPendingOrderForSession || ["creating", "restoring", "releasing", "uncertain"].includes(state.hold.phase) || Boolean(state.recovery);
   const previews = pending && state.hold.phase !== "creating" ? [] : selectedSeatPreviews(state.selection, state.seatMapRead.data, state.sessionRead.data, filterOptions, state.hold.data);
   const subtotal = sameAssignments(state.selection, state.hold.data) ? state.hold.data.subtotal * 100 : subtotalCents(previews);
   const max = filterOptions?.maxSeatsPerOrder;

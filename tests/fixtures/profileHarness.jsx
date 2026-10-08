@@ -1,5 +1,6 @@
 import { createElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter } from "react-router-dom";
 import AuthProvider from "../../src/auth/AuthProvider.jsx";
 import { useAuth } from "../../src/auth/AuthContext.js";
 import AppBootstrapProvider from "../../src/app/AppBootstrapProvider.jsx";
@@ -11,7 +12,7 @@ import ProfilePage from "../../src/pages/ProfilePage.jsx";
 import HoldRoutes from "./holdRoutes.jsx";
 
 const late = new URLSearchParams(location.search).has("late");
-const holdQa = new URLSearchParams(location.search).has("hold-qa");
+const holdQa = new URLSearchParams(location.search).has("hold-qa") || window.kinoHoldQa === true;
 const venues = [{ id: 3, name: "Server Venue" }];
 const profileAccess = { continuation: null, requestProfileAccess: () => {}, finishProfileAccess: () => {}, reauthenticateProfile: () => {} };
 const booking = { profileRemediationMessage: null };
@@ -41,7 +42,7 @@ export default function Harness() {
       {late ? (
         <AppBootstrapContext.Provider value={{ filterOptions: { venues } }}>
           <ProfileAccessContext.Provider value={profileAccess}>
-            <BookingContext.Provider value={booking}><ProfilePage /></BookingContext.Provider>
+            <BookingContext.Provider value={booking}><BrowserRouter><ProfilePage /></BrowserRouter></BookingContext.Provider>
           </ProfileAccessContext.Provider>
         </AppBootstrapContext.Provider>
       ) : <AppBootstrapProvider>{holdQa ? <HoldRoutes /> : <AppRouter />}</AppBootstrapProvider>}

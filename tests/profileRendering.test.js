@@ -29,7 +29,11 @@ async function fixture({ late = false, pending = false, path = "profile", initia
   browser.on("Fetch.requestPaused", async (event) => {
     const url = new URL(event.request.url), method = event.request.method;
     if (url.origin === new URL(origin).origin) return browser.send("Fetch.continueRequest", { requestId: event.requestId });
-    if (url.hostname !== "api.kinoxii.redberryinternship.ge") return browser.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
+    if (method === "GET" && url.hostname === "fonts.googleapis.com" && url.pathname === "/css2") return fulfill(event, null, 204);
+    if (url.hostname !== "api.kinoxii.redberryinternship.ge") {
+      calls.forbidden.push({ method, path: url.pathname });
+      return browser.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
+    }
     if (method === "OPTIONS") return fulfill(event, null, 204);
     if (method === "GET" && url.pathname === "/api/me") {
       calls.me++;
@@ -75,7 +79,10 @@ async function fixture({ late = false, pending = false, path = "profile", initia
     async snapshot() { return browser.evaluate(`({ auth: JSON.parse(document.getElementById('auth-probe').textContent), status: document.querySelector('.profile-page__status')?.textContent, fields: Object.fromEntries([...document.querySelectorAll('.profile-form input, .profile-form select')].map(e => [e.name, e.value])) })`); },
     async adopt(next) { const accepted = await browser.evaluate(`window.profileQa.replaceUser(${JSON.stringify(next)})`); assert.equal(accepted, true); await browser.wait(`JSON.parse(document.getElementById('auth-probe').textContent).user.fullName === ${JSON.stringify(next.fullName)}`); },
     async edit(name, value) { await browser.evaluate(`(() => { const input = document.querySelector('[name="${name}"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`); },
-    async close() { assert.deepEqual(calls.forbidden, []); assert.deepEqual(calls.exceptions, []); await browser.close(); },
+    async close() {
+      try { assert.deepEqual(calls.forbidden, []); assert.deepEqual(calls.exceptions, []); }
+      finally { await browser.close(); }
+    },
   };
 }
 

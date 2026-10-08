@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext.js";
-import { ROUTES } from "../../routing/routes.js";
+import { ROUTES, profileTicketsPath } from "../../routing/routes.js";
 import Avatar from "../Avatar.jsx";
 import chevronDown from "../../assets/icons/chevron-down.svg";
 import chevronUp from "../../assets/icons/chevron-up.svg";
@@ -107,9 +107,9 @@ export default function ProfileDropdown({ user, logoutFocusRef }) {
             <Link ref={profileLinkRef} to={ROUTES.profile} className="profile-dropdown__item" onClick={closeAndRestore}>
               <img src={userIcon} alt="" />My Profile
             </Link>
-            <button type="button" className="profile-dropdown__item" disabled title="My Tickets is not available yet">
-              <img src={ticketsIcon} alt="" />My Tickets<span className="visually-hidden"> (not available yet)</span>
-            </button>
+            <Link to={profileTicketsPath()} className="profile-dropdown__item" onClick={closeAndRestore}>
+              <img src={ticketsIcon} alt="" />My Tickets
+            </Link>
           </nav>
           <div className="profile-dropdown__divider" />
           <button type="button" className="profile-dropdown__item profile-dropdown__logout" onClick={handleLogout} disabled={Boolean(mutation)}>

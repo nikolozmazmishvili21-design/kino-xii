@@ -5,7 +5,10 @@ import SeatMap from "./SeatMap.jsx";
 import SelectedSeatsSummary from "./SelectedSeatsSummary.jsx";
 import closeIcon from "../../assets/icons/close.svg";
 import HoldTimer from "./HoldTimer.jsx";
-import CheckoutHandoff from "./CheckoutHandoff.jsx";
+import Checkout from "./Checkout.jsx";
+import OrderRecovery from "./OrderRecovery.jsx";
+import OrderNotice from "./OrderNotice.jsx";
+import OrderConfirmation from "./OrderConfirmation.jsx";
 import { HOLD_COPY } from "../../booking/holdLifecycle.js";
 
 function ReadStatus({ read, label, onRetry }) {
@@ -24,11 +27,14 @@ function sessionMetadata(session) {
 
 export default function SeatSelectionModal() {
   const id = useId();
-  const { state, config, close, retry, toggleSeat, openerRef, startOver, expire, changed, unknownOwn, verifiedIds } = useBooking();
+  const { state, config, close, completeOrderFlow, retry, toggleSeat, openerRef, startOver, expire, changed, unknownOwn, verifiedIds, hasPendingOrderForSession } = useBooking();
   const session = state.sessionRead.data;
   const terminal = [state.sessionRead, state.seatMapRead].some((read) => read.error?.status === 404);
-  const pending = ["creating", "restoring", "releasing", "uncertain"].includes(state.hold.phase) || Boolean(state.recovery);
+  const pending = hasPendingOrderForSession || ["creating", "restoring", "releasing", "uncertain"].includes(state.hold.phase) || Boolean(state.recovery);
   const blocked = pending || terminal || state.sessionRead.status !== "ready" || state.seatMapRead.status !== "ready" || !config.ready;
+  const uncertain = state.order.phase === "uncertain";
+  const success = state.order.phase === "success";
+  const closeModal = success ? () => completeOrderFlow() : close;
   const checkout = state.step === "checkout" && state.hold.phase === "active" && Boolean(state.hold.data);
   useLayoutEffect(() => {
     // Move focus only when a transition removed the focused control.
@@ -44,22 +50,27 @@ export default function SeatSelectionModal() {
     state.seatMapRead.status === "loading" && "Loading seat map…",
   ].filter(Boolean).join(" ");
   return (
-    <Modal className="seat-selection" labelledBy={`${id}-title`} describedBy={`${id}-description`}
-      onClose={close} openerRef={openerRef} focusKey={state.instanceId}>
+    <Modal className={`seat-selection${success ? " seat-selection--confirmation" : checkout ? " seat-selection--checkout" : ""}`} labelledBy={`${id}-title`} describedBy={success ? undefined : `${id}-description`}
+      onClose={closeModal} openerRef={openerRef} focusKey={state.instanceId}>
       <div className="seat-selection__content">
+        {success ? <>
+          <button type="button" className="seat-selection__close" onClick={closeModal} aria-label="Close booking confirmation"><img src={closeIcon} alt="" /></button>
+          <OrderConfirmation headingId={`${id}-title`} />
+        </> : <>
         <header className="seat-selection__header">
           <div>
             <h2 id={`${id}-title`}>{session?.movie?.title ?? "Seat Selection"}</h2>
             <p className="seat-selection__metadata">{sessionMetadata(session)}</p>
           </div>
           <div className="seat-selection__header-actions">
-            {state.hold.data && <HoldTimer hold={state.hold.data} onExpire={expire} />}
+            {!uncertain && state.hold.data && <HoldTimer hold={state.hold.data} onExpire={expire} />}
             <button type="button" className="seat-selection__close" data-initial-focus onClick={() => close()} aria-label="Close Seat Selection"><img src={closeIcon} alt="" /></button>
           </div>
         </header>
-        <p id={`${id}-description`} className="visually-hidden">Choose seats and ticket types. Seats are reserved only after a successful booking hold.</p>
+        <p id={`${id}-description`} className="visually-hidden">{uncertain ? "Check your tickets for the order outcome." : checkout ? "Complete your buyer and payment details for the held seats." : "Choose seats and ticket types. Seats are reserved only after a successful booking hold."}</p>
+        <OrderNotice inline />
         <div className="seat-selection__body">
-          {checkout ? <CheckoutHandoff /> : <>
+          {uncertain ? <OrderRecovery /> : checkout ? <Checkout /> : <>
           <div className="seat-selection__map-column">
             <ol className="seat-selection__progress" aria-label="Booking steps"><li aria-current="step">SEATS</li><li>CHECKOUT</li></ol>
             <div className="seat-selection__map-content">
@@ -82,10 +93,11 @@ export default function SeatSelectionModal() {
                 </>}
               </div>
               <p id="booking-selection-status" className="seat-selection__feedback" role="status" aria-live="polite" aria-atomic="true">
-                {state.hold.phase === "creating" ? "Holding seats…" : state.feedback ?? (state.hold.phase === "restoring" ? "Restoring your seat hold…" : loadingStatus || (blocked ? "Seat selection is unavailable until booking details, seat map, and configuration are ready." : ""))}
+                {hasPendingOrderForSession ? "Completing your order…" : state.hold.phase === "creating" ? "Holding seats…" : state.feedback ?? (state.hold.phase === "restoring" ? "Restoring your seat hold…" : loadingStatus || (blocked ? "Seat selection is unavailable until booking details, seat map, and configuration are ready." : ""))}
               </p>
+              {hasPendingOrderForSession && state.feedback && <p className="seat-selection__feedback" role="alert">{state.feedback}</p>}
               {changed && !pending && <p className="seat-selection__feedback">{HOLD_COPY.changed}</p>}
-              {unknownOwn && <p className="seat-selection__feedback">{HOLD_COPY.unknown}</p>}
+              {unknownOwn && !hasPendingOrderForSession && <p className="seat-selection__feedback">{HOLD_COPY.unknown}</p>}
               {state.releaseWarning && <p className="seat-selection__feedback" role="status">{state.releaseWarning}</p>}
             </div>
           </div>
@@ -93,6 +105,7 @@ export default function SeatSelectionModal() {
           <SelectedSeatsSummary />
           </>}
         </div>
+        </>}
       </div>
     </Modal>
   );

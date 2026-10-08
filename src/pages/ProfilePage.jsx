@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { useProfileAccess } from "../auth/ProfileAccessContext.js";
 import { useAppBootstrap } from "../app/AppBootstrapContext.js";
@@ -8,8 +9,11 @@ import completeIcon from "../assets/icons/profile-complete.svg";
 import useProfileForm from "../profile/useProfileForm.js";
 import { profileEligibility } from "../profile/profileForm.js";
 import { useBooking } from "../booking/BookingContext.js";
+import MyTickets from "../components/profile/MyTickets.jsx";
+import { ROUTES, profileTab, profileTicketsPath } from "../routing/routes.js";
 
 export default function ProfilePage() {
+  const tickets = profileTab(useLocation().search) === "tickets";
   const { status, mutation } = useAuth();
   const { profileRemediationMessage } = useBooking();
   const { continuation, requestProfileAccess, finishProfileAccess } = useProfileAccess();
@@ -35,11 +39,11 @@ export default function ProfilePage() {
         <header className="profile-page__header">
           <h1>My Profile</h1>
           <nav className="profile-page__navigation" aria-label="Profile">
-            <span className="profile-page__active" aria-current="page">Personal Information</span>
-            <button type="button" disabled>My Tickets</button>
+            <Link to={ROUTES.profile} className={!tickets ? "profile-page__active" : undefined} aria-current={!tickets ? "page" : undefined}>Personal Information</Link>
+            <Link to={profileTicketsPath()} className={tickets ? "profile-page__active" : undefined} aria-current={tickets ? "page" : undefined}>My Tickets</Link>
           </nav>
         </header>
-        <div className="profile-page__column">
+        <div className="profile-page__column" hidden={tickets}>
           <div className={`profile-page__banner${complete ? " profile-page__banner--complete" : ""}`}>
             <p className="profile-page__status">{complete && <img src={completeIcon} alt="" aria-hidden="true" />}{complete ? "Profile Complete" : "Profile incomplete"}</p>
             {!complete && <p>Please complete your profile to enable booking.</p>}
@@ -63,6 +67,7 @@ export default function ProfilePage() {
             </div>
           </form>
         </div>
+        {tickets && <MyTickets />}
       </main>
       <Footer />
     </>

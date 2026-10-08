@@ -20,3 +20,6 @@
 @import "./pages/movie-detail.css";
 @import "./pages/profile.css";
 @import "./components/seat-selection.css";
+@import "./components/checkout.css";
+@import "./components/order-confirmation.css";
+@import "./components/my-tickets.css";

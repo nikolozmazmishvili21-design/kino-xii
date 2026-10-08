@@ -57,13 +57,9 @@
   content: "";
 }
 
-.profile-page__navigation button {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--color-muted);
-  cursor: not-allowed;
-}
+.profile-page__navigation a { color: var(--color-muted); text-decoration: none; padding-inline: 2px; }
+.profile-page__navigation a[aria-current] { color: var(--color-text); }
+.profile-page__navigation a[aria-current]::after { width: calc(100% + 4px); }
 
 .profile-page__column {
   width: 880px;
