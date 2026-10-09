@@ -1,10 +1,12 @@
 import { getTickets, refundOrder } from "../api/ticketsApi.js";
 import {
   captureRefundIdentity, classifyRefundError, classifyRefundResponse,
-  matchesRefundIdentity, refundEligible,
+  matchesRefundIdentity, refundEligible, inspectRefundVerification, readableRefundOrder,
 } from "./refundLifecycle.js";
+import { groupTicketOrders } from "./ticketGroups.js";
 
 export const REFUND_WAIT_MS = 30_000;
+export const REFUND_RECONFIRMATION_WARNING = "We couldn't confirm the earlier refund. Your tickets currently show this order as paid and refundable, but the earlier request may still complete. Confirming sends a new refund request.";
 const IDLE = Object.freeze({ busy: false, phase: "idle", confirmation: null,
   records: Object.freeze([]), generation: 0 });
 
@@ -25,6 +27,7 @@ export function createRefundRuntime({
   let requestGeneration = 0, notifying = false, dirty = false, queued = false, observedAuth = null, revokedAuth = null, cache = null;
   const accounts = new Map(), listeners = new Set(), outcomeListeners = new Set();
   let verification = null, continuationAuth = null;
+  let recovery = null, consentEvidence = null;
   const CLOSED_AUTH = Object.freeze({ loginRequired: false, suppressProfileGate: false, requestId: null });
   const SUPPRESSED_AUTH = Object.freeze({ ...CLOSED_AUTH, suppressProfileGate: true });
   let authGate = CLOSED_AUTH, authGateAccountId = null;
@@ -68,9 +71,15 @@ export function createRefundRuntime({
       && current.generation === expected.generation && current.token === expected.token);
   };
   const account = (id) => {
-    if (!accounts.has(id)) accounts.set(id, { generation: 0, records: new Map() });
+    if (!accounts.has(id)) accounts.set(id, { generation: 0, records: new Map(), eligibility: new Map() });
     return accounts.get(id);
   };
+  function clearEligibility(state) {
+    state.eligibility.clear();
+    for (const [reference, record] of state.records) {
+      if (record.phase === "retry_available") state.records.set(reference, Object.freeze({ ...record, phase: "uncertain" }));
+    }
+  }
   function report(error) {
     try { onObserverError(error); } catch { /* Observers cannot own mutation finalization. */ }
   }
@@ -129,18 +138,21 @@ export function createRefundRuntime({
     }
   }
   function cancelIntent() {
+    const hadRead = Boolean(verification || recovery);
     if (verification) {
       const old = verification;
       verification = null; // Fence before synchronous abort callbacks.
       old.controller.abort();
     }
     continuationAuth = null;
+    cancelRecovery();
     if (authGate.loginRequired) setAuthGate(SUPPRESSED_AUTH);
     const retained = retainedIntent();
-    if (!consent && !pending?.allowContinuation && !retained) return;
+    if (!consent && !pending?.allowContinuation && !retained && !hadRead) return;
     if (retained) setAuthGate(SUPPRESSED_AUTH, retained.accountId);
     consent = null;
     consentAuth = null;
+    consentEvidence = null;
     consentGeneration++;
     if (pending) pending.allowContinuation = false;
     revokeContinuations();
@@ -150,6 +162,7 @@ export function createRefundRuntime({
     const current = auth();
     if (current) revokedAuth = { accountId: current.accountId, generation: current.generation };
     cancelIntent();
+    for (const state of accounts.values()) clearEligibility(state);
   }
   function syncAuth() {
     const current = auth();
@@ -160,10 +173,15 @@ export function createRefundRuntime({
     // Once verification starts, any credential change ends that continuation.
     const expectedReauth = record?.phase === "reauth"
       && (!current || current.accountId === intent.accountId);
+    const expectedReadAuth = recovery?.awaitingAuth
+      && (!current || current.accountId === recovery.accountId);
+    if (recovery && !expectedReadAuth && !sameAuth(recovery.auth)) cancelIntent();
     if (observedAuth && !sameAuth(observedAuth)) {
       consent = null;
       consentAuth = null;
-      if (!expectedReauth) consentGeneration++;
+      consentEvidence = null;
+      for (const state of accounts.values()) clearEligibility(state);
+      if (!expectedReauth && !expectedReadAuth) consentGeneration++;
       if (pending) pending.allowContinuation = false;
     }
     if (intent && ((!expectedReauth && !sameAuth(continuationAuth))
@@ -172,16 +190,26 @@ export function createRefundRuntime({
     observedAuth = current ? { ...current } : null;
     notify();
   }
-  function createConsent(order, { confirmed = false } = {}) {
+  function evidenceCurrent(evidence, order) {
+    return Boolean(evidence && sameAuth(evidence.auth) && isReadCurrent(evidence.guard)
+      && account(evidence.guard.accountId).eligibility.get(evidence.identity.reference) === evidence
+      && matchesRefundIdentity(order, evidence.identity) && refundEligible(order, evidence.identity));
+  }
+  function createConsent(order, { confirmed = false, warningAcknowledged = false } = {}) {
     checkDeadline();
     const current = auth(), identity = captureRefundIdentity(order);
-    // Renewed attempts need the later factual-verification coordinator. Fail closed
-    // for every recorded reference (including acknowledged success/refusal).
+    const state = current && account(current.accountId), record = state?.records.get(identity?.reference);
+    const evidence = record && state.eligibility.get(identity.reference);
     if (notifying || pending || !current || confirmed !== true || !isContextCurrent()
-      || !refundEligible(order, identity) || account(current.accountId).records.has(identity.reference)) return null;
+      || !refundEligible(order, identity) || record?.reportedRefunded
+      || (record && (!evidenceCurrent(evidence, order)
+        || (record.priorUncertainty && warningAcknowledged !== true)))) return null;
+    cancelRecovery();
     revokeContinuations(); // A new explicit intent supersedes any retained 401 intent.
     consent = Object.freeze({ accountId: current.accountId, authGeneration: current.generation,
-      identity, consentGeneration: ++consentGeneration });
+      identity, consentGeneration: ++consentGeneration,
+      ...(record?.priorUncertainty ? { warning: REFUND_RECONFIRMATION_WARNING } : {}) });
+    consentEvidence = evidence ?? null;
     consentAuth = { ...current };
     observedAuth = { ...current };
     notify();
@@ -205,6 +233,7 @@ export function createRefundRuntime({
       displayStatus: outcome.displayStatus ?? null,
       reason: outcome.kind === "unauthenticated" ? "unauthenticated" : outcome.reason ?? null,
       message: outcome.message ?? null, replayCount: request.replayCount, continuation });
+    state.eligibility.clear();
     state.records.set(request.identity.reference, record);
   }
   function finish(request, outcome, deadline = false) {
@@ -271,25 +300,35 @@ export function createRefundRuntime({
     checkDeadline();
     if (notifying || pending || !authorization || authorization !== consent
       || !sameAuth(consentAuth) || !isContextCurrent()
-      || !refundEligible(order, authorization.identity)) return Promise.resolve({ kind: "blocked" });
+      || !refundEligible(order, authorization.identity)
+      || (consentEvidence && !evidenceCurrent(consentEvidence, order))) return Promise.resolve({ kind: "blocked" });
+    const previous = account(authorization.accountId).records.get(authorization.identity.reference);
     const request = { id: ++requestGeneration, accountId: authorization.accountId,
       identity: authorization.identity, consentGeneration: authorization.consentGeneration,
       auth: { ...consentAuth }, controller: new AbortController(), allowContinuation: true, replayCount,
-      terminal: false, dispatched: false, timer: null };
+      terminal: false, dispatched: false, timer: null, evidence: consentEvidence };
     const result = new Promise((resolve) => { request.resolve = resolve; });
     pending = request; // Synchronous slot acquired before ANY subscriber/factory.
     consent = null;
     consentAuth = null;
+    consentEvidence = null;
     account(request.accountId).records.set(request.identity.reference, Object.freeze({
+      ...previous,
       identity: request.identity, accountId: request.accountId, requestId: request.id,
-      phase: "submitting", priorUncertainty: false, reportedRefunded: false, replayCount, continuation: null,
+      // Settlement metadata belongs to this attempt, never its predecessor.
+      disposition: null, settledGeneration: null,
+      phase: "submitting", priorUncertainty: Boolean(previous?.priorUncertainty), reportedRefunded: false, replayCount, continuation: null,
     }));
     notify();
     if (!sameAuth(request.auth) || !isContextCurrent() || !request.allowContinuation
       || request.consentGeneration !== consentGeneration
-      || !matchesRefundIdentity(order, request.identity) || !refundEligible(order, request.identity)) {
+      || !matchesRefundIdentity(order, request.identity) || !refundEligible(order, request.identity)
+      || (request.evidence && !evidenceCurrent(request.evidence, order))) {
       // No dispatch happened; discard this provisional record and its own slot.
-      account(request.accountId).records.delete(request.identity.reference);
+      if (previous) account(request.accountId).records.set(request.identity.reference,
+        request.evidence && !evidenceCurrent(request.evidence, order)
+          ? Object.freeze({ ...previous, phase: previous.priorUncertainty ? "uncertain" : "blocked" }) : previous);
+      else account(request.accountId).records.delete(request.identity.reference);
       if (pending === request) pending = null;
       request.terminal = true;
       request.resolve(Object.freeze({ kind: "blocked", requestId: request.id }));
@@ -297,6 +336,7 @@ export function createRefundRuntime({
       return result;
     }
     account(request.accountId).generation++;
+    account(request.accountId).eligibility.clear();
     request.dispatched = true;
     request.deadline = now() + REFUND_WAIT_MS;
     arm(request);
@@ -323,6 +363,158 @@ export function createRefundRuntime({
     });
     notify();
     return result;
+  }
+  function updateRecord(owner, changes) {
+    const state = account(owner.accountId), record = state.records.get(owner.identity.reference);
+    if (!record || record.requestId !== owner.originRequestId) return false;
+    state.records.set(owner.identity.reference, Object.freeze({ ...record, ...changes }));
+    return true;
+  }
+  function cancelRecovery() {
+    const old = recovery;
+    if (!old) return;
+    recovery = null;
+    if (verification?.recovery === old) {
+      const request = verification; verification = null;
+      request.controller.abort();
+    }
+    const record = account(old.accountId).records.get(old.identity.reference);
+    updateRecord(old, { phase: record?.reportedRefunded ? "succeeded"
+      : record?.priorUncertainty ? "uncertain" : "blocked", recoveryPurpose: null });
+  }
+  function invalidateEligibility() {
+    const current = auth();
+    if (!current) return;
+    const state = account(current.accountId);
+    if (!state.eligibility.size) return;
+    clearEligibility(state);
+    if (consentEvidence) {
+      consent = null; consentAuth = null; consentEvidence = null; consentGeneration++;
+    }
+    notify();
+  }
+  function coherentTickets(orders) {
+    try { groupTicketOrders(orders); } catch { return false; }
+    for (const record of snapshot().records) {
+      if (!record.reportedRefunded) continue;
+      const matches = orders.filter(order => order.reference === record.identity.reference);
+      if (matches.length !== 1 || matches[0].status !== "refunded"
+        || !readableRefundOrder(matches[0], record.identity)) return false;
+    }
+    return true;
+  }
+  function observeTickets(orders, guard) {
+    if (!isReadCurrent(guard)) return false;
+    const coherent = coherentTickets(orders), state = account(guard.accountId);
+    let changed = false;
+    for (const [reference, record] of state.records) {
+      if (!record.reportedRefunded) continue;
+      const displayStatus = coherent ? "ready" : "error";
+      if (record.displayStatus !== displayStatus) {
+        state.records.set(reference, Object.freeze({ ...record, displayStatus })); changed = true;
+      }
+    }
+    if (changed) notify();
+    return coherent;
+  }
+  function publishTickets(orders, expectedAuth) {
+    const event = Object.freeze({ guard: readGuard(), orders });
+    notifying = true;
+    try {
+      for (const listener of [...outcomeListeners]) {
+        if (!sameAuth(expectedAuth) || !isReadCurrent(event.guard)) break;
+        try { listener(event); } catch (error) { report(error); }
+      }
+    } finally { notifying = false; }
+  }
+  function recoveryCurrent(request) {
+    return verification === request && recovery === request.recovery
+      && recovery.consentGeneration === consentGeneration && sameAuth(request.auth)
+      && isReadCurrent(request.guard) && isContextCurrent() && !pending
+      && account(recovery.accountId).records.get(recovery.identity.reference)?.requestId === recovery.originRequestId;
+  }
+  async function verifyRecovery(owner) {
+    if (!owner || recovery !== owner || verification || pending || !sameAuth(owner.auth)
+      || owner.awaitingAuth || owner.consentGeneration !== consentGeneration || !isContextCurrent()) return { kind: "blocked" };
+    const state = account(owner.accountId);
+    state.eligibility.clear();
+    state.generation++; // Obsolete reads begun before this explicit verification.
+    const request = { recovery: owner, auth: { ...owner.auth }, guard: readGuard(), controller: new AbortController() };
+    verification = request;
+    const original = state.records.get(owner.identity.reference);
+    updateRecord(owner, { phase: original.reportedRefunded ? "succeeded" : "verifying",
+      recoveryPurpose: owner.purpose, ...(original.reportedRefunded ? { displayStatus: "refreshing" } : {}) });
+    notify();
+    if (!recoveryCurrent(request)) return { kind: "stale" };
+    let orders;
+    try {
+      orders = await read({ token: request.auth.token, signal: request.controller.signal });
+    } catch (error) {
+      if (!recoveryCurrent(request)) return { kind: "stale" };
+      verification = null;
+      state.generation++;
+      const unauthorized = error?.status === 401;
+      const exhausted = unauthorized && owner.authAttempts === 1;
+      updateRecord(owner, { phase: original.reportedRefunded ? "succeeded" : exhausted ? "blocked" : "verification_retry",
+        reason: unauthorized ? "unauthenticated" : "verification-read-failed",
+        ...(original.reportedRefunded ? { displayStatus: "error" } : {}) });
+      if (unauthorized) {
+        owner.awaitingAuth = !exhausted;
+        owner.authAttempts = 1;
+        setAuthGate(exhausted ? SUPPRESSED_AUTH : Object.freeze({
+          loginRequired: true, suppressProfileGate: true, requestId: owner.requestId,
+        }), owner.accountId);
+        if (exhausted) recovery = null;
+        if (!expireOwnedAuth(request.auth) && recovery === owner) {
+          recovery = null;
+          updateRecord(owner, { phase: original.reportedRefunded ? "succeeded" : "blocked" });
+          setAuthGate(SUPPRESSED_AUTH, owner.accountId);
+        }
+      }
+      notify();
+      return { kind: exhausted ? "blocked" : "verification_retry" };
+    }
+    if (!recoveryCurrent(request)) return { kind: "stale" };
+    let outcome = inspectRefundVerification(orders, owner.identity);
+    const coherent = coherentTickets(orders);
+    if ((original.reportedRefunded && outcome.kind !== "succeeded")
+      || (outcome.kind === "retry_available" && !coherent)) outcome = { kind: "inconclusive" };
+    verification = null;
+    recovery = null;
+    state.generation++; // Fence every competing GET, including reads during verification.
+    const reportedRefunded = original.reportedRefunded || outcome.kind === "succeeded";
+    const eligible = !reportedRefunded && outcome.kind === "retry_available";
+    updateRecord(owner, { phase: reportedRefunded ? "succeeded" : eligible
+      ? original.priorUncertainty ? "retry_available" : "idle"
+      : original.priorUncertainty ? "uncertain" : "blocked",
+    reportedRefunded, recoveryPurpose: null,
+    reason: ["ineligible", "inconclusive"].includes(outcome.kind) ? outcome.kind : null,
+    displayStatus: reportedRefunded ? coherent && outcome.order ? "ready"
+      : outcome.kind === "succeeded" && !original.reportedRefunded ? "refreshing" : "error" : original.displayStatus });
+    if (eligible) state.eligibility.set(owner.identity.reference, Object.freeze({
+      identity: owner.identity, auth: { ...request.auth }, guard: readGuard(), verificationId: owner.requestId,
+    }));
+    if (coherent && (!reportedRefunded || outcome.order)) publishTickets(orders, request.auth);
+    notify();
+    return { kind: outcome.kind };
+  }
+  function checkStatus(reference) {
+    checkDeadline();
+    const current = auth(), record = current && account(current.accountId).records.get(reference);
+    // Only completed local settlement/retirement may begin an authorizing read.
+    if (notifying || pending || verification || retainedIntent() || !current || !isContextCurrent()
+      || !record || !["settled", "deadline-retired"].includes(record.disposition)) return Promise.resolve({ kind: "blocked" });
+    if (recovery) {
+      if (recovery.identity.reference === reference) return verifyRecovery(recovery);
+      cancelRecovery();
+    }
+    invalidateEligibility();
+    consent = null; consentAuth = null; consentEvidence = null;
+    recovery = { accountId: current.accountId, identity: record.identity, originRequestId: record.requestId,
+      requestId: ++requestGeneration, consentGeneration: ++consentGeneration,
+      purpose: record.reportedRefunded ? "display" : record.priorUncertainty ? "uncertainty" : "context",
+      auth: { ...current }, authAttempts: 0, awaitingAuth: false };
+    return verifyRecovery(recovery);
   }
   function verificationCurrent(request) {
     return verification === request && retainedIntent() === request.intent
@@ -403,6 +595,15 @@ export function createRefundRuntime({
     return dispatch(consent, order, 1);
   }
   function authenticationSucceeded(requestId) {
+    if (recovery?.requestId === requestId && recovery.awaitingAuth) {
+      const current = auth(), owner = recovery;
+      if (!current || current.accountId !== owner.accountId || current.generation === owner.auth.generation
+        || !isContextCurrent() || owner.consentGeneration !== consentGeneration) return Promise.resolve({ kind: "blocked" });
+      owner.auth = { ...current };
+      owner.awaitingAuth = false;
+      setAuthGate(CLOSED_AUTH);
+      return verifyRecovery(owner); // Read-only: authentication never grants POST consent.
+    }
     const intent = retainedIntent(), current = auth();
     if (!intent || intent.requestId !== requestId || !current
       || account(intent.accountId).records.get(intent.identity.reference)?.phase !== "reauth"
@@ -412,6 +613,7 @@ export function createRefundRuntime({
     return verifyIntent(intent, current);
   }
   function retryVerification() {
+    if (recovery) return verifyRecovery(recovery);
     const intent = retainedIntent();
     if (!intent || account(intent.accountId).records.get(intent.identity.reference)?.phase !== "verification_retry") {
       return Promise.resolve({ kind: "blocked" });
@@ -420,6 +622,7 @@ export function createRefundRuntime({
   }
   function leaveContext() {
     cancelIntent();
+    for (const state of accounts.values()) clearEligibility(state);
     setAuthGate(CLOSED_AUTH);
     notify();
   }
@@ -427,9 +630,12 @@ export function createRefundRuntime({
     createConsent, submit: (authorization, order) => dispatch(authorization, order),
     snapshot, readGuard, isReadCurrent, syncAuth,
     cancelIntent, logout, checkDeadline, leaveContext, authenticationSucceeded, retryVerification,
-    hasContinuation: () => Boolean(retainedIntent()),
+    checkStatus, invalidateEligibility, observeTickets,
+    hasContinuation: () => Boolean(retainedIntent() || recovery),
+    hasReadRecovery: () => Boolean(recovery),
+    isRecovering: () => Boolean(verification?.recovery),
     beginExplicitAuthentication() {
-      if (!retainedIntent()) { setAuthGate(CLOSED_AUTH); notify(); }
+      if (!retainedIntent() && !recovery) { setAuthGate(CLOSED_AUTH); notify(); }
     },
     authSnapshot,
     hasActivePost: () => Boolean(pending),

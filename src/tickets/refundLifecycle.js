@@ -91,15 +91,21 @@ export function classifyRefundVerification(orders, attempt, read, current) {
   if (!verificationPrerequisites(attempt, read, current) || !Array.isArray(orders)) {
     return { kind: "blocked" };
   }
-  const matches = orders.filter((order) => matchesRefundReference(order, attempt.identity));
+  return inspectRefundVerification(orders, attempt.identity);
+}
+
+// Target evidence only. The runtime owns settlement, read and auth admission.
+export function inspectRefundVerification(orders, identity) {
+  if (!Array.isArray(orders)) return { kind: "inconclusive" };
+  const matches = orders.filter((order) => matchesRefundReference(order, identity));
   if (matches.length !== 1) return { kind: "inconclusive" };
   const order = matches[0];
   if (order.status === "refunded") {
-    return classifyRefundResponse({ status: 200, data: { data: order } }, attempt.identity);
+    return classifyRefundResponse({ status: 200, data: { data: order } }, identity);
   }
-  if (!matchesRefundIdentity(order, attempt.identity)) return { kind: "inconclusive" };
-  if (refundEligible(order, attempt.identity)) return { kind: "retry_available" };
-  return { kind: readableRefundOrder(order, attempt.identity) ? "ineligible" : "inconclusive" };
+  if (!matchesRefundIdentity(order, identity)) return { kind: "inconclusive" };
+  if (refundEligible(order, identity)) return { kind: "retry_available" };
+  return { kind: readableRefundOrder(order, identity) ? "ineligible" : "inconclusive" };
 }
 
 export function reconfirmationEligible(orders, attempt, read, current) {

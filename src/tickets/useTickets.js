@@ -19,7 +19,12 @@ export default function useTickets(consumeRecovery) {
   const [attempt, setAttempt] = useState(0);
   const [read, setRead] = useState({ owner: null, attempt: -1, status: "idle", data: [], error: null });
   const recovery = useRef(null), sequence = useRef(0), controllerRef = useRef(null), withheldAuthRead = useRef(null);
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
+  const retry = useCallback(() => {
+    if (refund?.hasReadRecovery()) { void refund.retryVerification(); return; }
+    const details = refund?.snapshot().records.find(record => record.reportedRefunded && record.displayStatus !== "ready");
+    if (details) { void refund.checkStatus(details.identity.reference); return; }
+    setAttempt((value) => value + 1);
+  }, [refund]);
   const generation = barrier.generation;
   const authGeneration = user ? getSessionIdentity?.()?.generation ?? null : null;
 
@@ -27,8 +32,20 @@ export default function useTickets(consumeRecovery) {
     if (!refund || !user) return;
     return refund.subscribeOutcome((event) => {
       if (!isCurrentUser(user) || !refund.isReadCurrent(event.guard)
-        || event.guard.authGeneration !== authGeneration
-        || !readableRefundOrder(event.order, event.identity)) return;
+        || event.guard.authGeneration !== authGeneration) return;
+      if (event.orders) {
+        const groups = groupTicketOrders(event.orders);
+        sequence.current++;
+        controllerRef.current?.abort();
+        setRead(previous => {
+          if (!isCurrentUser(user) || !refund.isReadCurrent(event.guard)) return previous;
+          return { owner: user, attempt, authGeneration, generation: event.guard.generation,
+            status: event.orders.length ? "success" : "empty", data: event.orders, groups,
+            error: null, identity: recovery.current?.identity ?? null, adopted: true };
+        });
+        return;
+      }
+      if (!readableRefundOrder(event.order, event.identity)) return;
       sequence.current++;
       controllerRef.current?.abort();
       setRead((previous) => {
@@ -57,7 +74,7 @@ export default function useTickets(consumeRecovery) {
     // compete with it or route a second 401 through Profile's generic gate.
     if (needsAuthCoordination && (refund?.hasContinuation() || withheldAuthRead.current !== generation)) {
       withheldAuthRead.current = generation;
-      setRead({ owner: user, attempt, authGeneration, generation, status: "error", data: [],
+      setRead({ owner: user, attempt, authGeneration, generation, status: refund?.isRecovering() ? "loading" : "error", data: [],
         error: "Unable to load your tickets. Try again.", adopted: false });
       return;
     }
@@ -65,6 +82,12 @@ export default function useTickets(consumeRecovery) {
     // Every remount/new auth/retry still obtains fresh unfiltered server facts.
     if (read.adopted && read.owner === user && read.attempt === attempt
       && read.authGeneration === authGeneration && read.generation === generation) return;
+    const details = barrier.records.find(record => record.reportedRefunded && record.displayStatus !== "ready");
+    if (details) {
+      if (details.displayStatus === "refreshing") void refund.checkStatus(details.identity.reference);
+      return;
+    }
+    refund?.invalidateEligibility(); // A new ordinary read supersedes renewed consent authority.
     const controller = new AbortController(), requestId = ++sequence.current;
     controllerRef.current = controller;
     let active = true;
@@ -83,6 +106,7 @@ export default function useTickets(consumeRecovery) {
           throw new Error("Refund details could not be restored. Retry tickets.");
         }
       }
+      if (refund && !refund.observeTickets(data, guard)) throw new Error("Refund details could not be restored. Retry tickets.");
       if (!current()) return;
       setRead({ owner: user, attempt, authGeneration, generation, status: data.length ? "success" : "empty",
         data, groups, error: null, identity: recovery.current?.identity ?? null, adopted: false });
@@ -111,6 +135,9 @@ export default function useTickets(consumeRecovery) {
   // Mask before cleanup effects: account, session, Retry and mutation generations
   // are all required, including reads that began during a pending mutation.
   if (!user) return { status: "unauthenticated", data: [], error: null, retry };
+  if (!refund?.hasReadRecovery() && barrier.records.some(record => record.reportedRefunded && record.displayStatus === "error")) {
+    return { status: "error", data: [], error: "Refund details could not be restored. Retry tickets.", retry };
+  }
   if (read.owner !== user || read.attempt !== attempt || read.authGeneration !== authGeneration
     || read.generation !== generation) return { status: "loading", data: [], error: null, retry };
   return { status: read.status, data: read.data, groups: read.groups, error: read.error, identity: read.identity, retry };

@@ -30,6 +30,16 @@ export function Probe() {
         return Boolean(consent);
       },
       confirm(order) { return runtime.createConsent(order, { confirmed: true }); },
+      check(reference) {
+        window.refundQaRecoveryResult = null;
+        runtime.checkStatus(reference).then(value => { window.refundQaRecoveryResult = value; });
+      },
+      renew(order, warningAcknowledged) {
+        const consent = runtime.createConsent(order, { confirmed: true, warningAcknowledged });
+        if (!consent) return false;
+        runtime.submit(consent, order).then(value => { window.refundQaResult = value; });
+        return true;
+      },
       snapshot: runtime.snapshot, cancel: runtime.cancelIntent,
       authSnapshot: runtime.authSnapshot, verify: runtime.retryVerification, resume: runtime.authenticationSucceeded,
       deadline: runtime.checkDeadline, busy: runtime.hasActivePost,

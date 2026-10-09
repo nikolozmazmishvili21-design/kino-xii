@@ -34,6 +34,7 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
   const calls = { refunds: 0, tickets: 0, me: 0, logouts: 0, deletes: 0, forbidden: [], exceptions: [] };
   let freshUser = user(), data = [order()], refundRequest, meRequest, loginRequest;
   let loginStatus = 200, pauseLogin = false;
+  let ticketStatus = 200;
   const chronology = [], ticketCredentials = [], refundCredentials = [];
   const reads = [], handlerErrors = [], pendingHandlers = new Set();
   let closing = false;
@@ -88,7 +89,7 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
         calls.tickets++; chronology.push("tickets");
         ticketCredentials.push(new Headers(event.request.headers).get("Authorization"));
         if (pauseTickets) { reads.push(event); return; }
-        return fulfill(event, { data });
+        return fulfill(event, ticketStatus === 200 ? { data } : { message: "Synthetic tickets refusal" }, ticketStatus);
       }
       if (method === "POST" && /^[/]api[/]orders[/][^/]+[/]refund$/.test(url.pathname)) {
         calls.refunds++; chronology.push("refund"); refundCredentials.push(new Headers(event.request.headers).get("Authorization"));
@@ -139,10 +140,13 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
     waitCalls, setLoginStatus(value) { loginStatus = value; },
     setPauseLogin(value) { pauseLogin = value; },
     async start(value = order()) {
+      const expected = calls.refunds + 1;
+      refundRequest = null;
       const accepted = await browser.evaluate("window.refundQa.start(" + JSON.stringify(value) + ")");
-      assert.equal(accepted, true); await waitCalls(() => Boolean(refundRequest));
+      assert.equal(accepted, true); await waitCalls(() => calls.refunds === expected && Boolean(refundRequest));
     },
     setPause(value) { pauseTickets = value; }, setData(value) { data = value; },
+    setTicketStatus(value) { ticketStatus = value; },
     setUser(value) { freshUser = value; },
     async login(value = user()) {
       freshUser = value;
@@ -791,5 +795,181 @@ rendered("N3: B explicit logout after A Refund reauth restores the normal Profil
     assert.equal(await h.browser.evaluate("window.refundQa.identity()"), null);
     assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal--login'))"), true);
     assert.equal(h.calls.refunds, 1); assert.equal(h.calls.logouts, 1);
+  } finally { await h.close(); }
+});
+
+async function checkRecovery(h, expected) {
+  await h.browser.evaluate("window.refundQa.check('REFUND-A')");
+  await h.browser.wait("window.refundQaRecoveryResult !== null");
+  assert.equal(await h.browser.evaluate("window.refundQaRecoveryResult.kind"), expected);
+}
+const renewedConsent = (h, warned = true, value = order()) => h.browser.evaluate(
+  "window.refundQa.renew(" + JSON.stringify(value) + "," + warned + ")");
+
+rendered("Slice 4: uncertain POST, fresh paid GET and explicit warned consent send exactly one new POST", async () => {
+  const h = await fixture();
+  try {
+    await h.start(); await h.finish(null, 500); await h.settle();
+    const before = h.calls.tickets;
+    h.setData([order()]); await checkRecovery(h, "retry_available");
+    assert.ok(h.calls.tickets > before); assert.equal(h.calls.refunds, 1);
+    assert.equal(await renewedConsent(h, false), false);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order button').length"), 0);
+    assert.match(await h.browser.evaluate("location.search"), /keep=1/);
+    assert.equal(await renewedConsent(h), true); await h.waitCalls(() => h.calls.refunds === 2);
+    assert.equal(await renewedConsent(h), false);
+    await h.finish();
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=past&keep=1')");
+    await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].priorUncertainty"), true);
+    assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__order').textContent"), /17.25/);
+    assert.equal(h.calls.refunds, 2);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 4: post-retirement paid GET authorizes only new consent; late success cannot replace its owner", async () => {
+  const h = await fixture();
+  try {
+    await h.start();
+    await checkRecovery(h, "blocked");
+    await h.expire(); await checkRecovery(h, "retry_available");
+    assert.equal(h.calls.refunds, 1);
+    // Chrome has invalidated the old aborted interception; existing B1 handling
+    // remains the only allowed interception-error exception.
+    await h.finish();
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), false);
+    assert.equal(await renewedConsent(h), true); await h.waitCalls(() => h.calls.refunds === 2);
+    await h.finish(null, 422);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].priorUncertainty"), true);
+    assert.equal(await renewedConsent(h), false);
+    await checkRecovery(h, "retry_available"); assert.equal(h.calls.refunds, 2);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 4: refunded verification adopts the complete list, ordering, counts and selected URL group", async () => {
+  const h = await fixture();
+  try {
+    await h.start(); await h.failRefund();
+    h.setData([order("OTHER"), refunded()]); await checkRecovery(h, "succeeded");
+    await h.browser.wait("document.querySelectorAll('.my-tickets__tabs .my-tickets__count')[1]?.textContent === '1'");
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order').length"), 1);
+    assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__order').textContent"), /OTHER/);
+    assert.match(await h.browser.evaluate("location.search"), /filter=upcoming.*keep=1/);
+    assert.equal(await renewedConsent(h), false);
+    await h.browser.evaluate("document.querySelectorAll('.my-tickets__tabs button')[1].click()");
+    await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 4: ineligible, missing, duplicate, mismatched and contradictory recovery never grants consent", async () => {
+  for (const [data, expected] of [
+    [[{ ...order(), isRefundable: false }], "ineligible"],
+    [[{ ...order(), isUpcoming: false, isRefundable: false }], "ineligible"],
+    [[], "inconclusive"], [[order(), order()], "inconclusive"],
+    [[{ ...order(), id: 999 }], "inconclusive"],
+    [[{ ...order(), session: { ...order().session, id: 999 } }], "inconclusive"],
+    [[{ ...order(), isUpcoming: false }], "inconclusive"],
+  ]) {
+    const h = await fixture();
+    try {
+      await h.start(); await h.finish(null, 500); h.setData(data); await checkRecovery(h, expected);
+      assert.equal(await renewedConsent(h), false); assert.equal(h.calls.refunds, 1);
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].priorUncertainty"), true);
+    } finally { await h.close(); }
+  }
+});
+
+rendered("Slice 4: partial refunded recovery preserves facts through display failure and restores with GET-only Retry", async () => {
+  const h = await fixture();
+  try {
+    await h.start(); await h.finish(null, 500);
+    h.setPause(true); const index = h.reads.length;
+    await h.browser.evaluate("window.refundQa.check('REFUND-A')");
+    await h.waitCalls(() => h.reads.length > index);
+    await h.read(index, [{ reference: "REFUND-A", status: "refunded" }]);
+    await h.waitCalls(() => h.reads.length > index + 1);
+    await h.read(index + 1, [], 500);
+    await h.browser.wait("document.querySelector('.my-tickets__error button')");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), true);
+    assert.equal(await renewedConsent(h), false);
+    h.setPause(false); h.setData([refunded()]);
+    await h.browser.evaluate("document.querySelector('.my-tickets__error button').click()");
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=past&keep=1')");
+    await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].displayStatus"), "ready");
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 4: recovery GET 401 uses real Login then GET only; paid eligibility still needs warned consent", async () => {
+  const h = await fixture();
+  try {
+    await h.start(); await h.finish(null, 500); h.setTicketStatus(401);
+    await checkRecovery(h, "verification_retry");
+    await h.browser.wait("document.querySelector('.auth-modal--login')");
+    h.setTicketStatus(200); h.setData([order()]); await h.modalLogin();
+    await h.browser.wait("window.refundQa.snapshot().records[0]?.phase === 'retry_available'");
+    assert.equal(h.calls.refunds, 1); assert.equal(await renewedConsent(h, false), false);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(await renewedConsent(h), true); await h.waitCalls(() => h.calls.refunds === 2); await h.finish();
+  } finally { await h.close(); }
+});
+
+rendered("Slice 4: second recovery GET 401 blocks automatic Login without POST or generic Profile loops", async () => {
+  const h = await fixture();
+  try {
+    await h.start(); await h.finish(null, 500); h.setTicketStatus(401);
+    await checkRecovery(h, "verification_retry"); await h.browser.wait("document.querySelector('.auth-modal--login')");
+    await h.modalLogin();
+    await h.browser.wait("window.refundQa.identity() === null && !document.querySelector('.auth-modal')");
+    for (let i = 0; i < 3; i++) await h.settle();
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.refunds, 1);
+    await h.browser.evaluate("window.refundQa.mount(false);window.refundQa.mount(true)"); await h.settle();
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 4: account switch and navigation fence non-aborting recovery responses and stale 401", async () => {
+  for (const action of ["account", "navigation"]) for (const status of [200, 401]) {
+    const h = await fixture({ ignoreTicketAbort: true });
+    try {
+      await h.start(); await h.finish(null, 500); await h.settle();
+      h.setPause(true); const index = h.reads.length;
+      await h.browser.evaluate("window.refundQa.check('REFUND-A')"); await h.waitCalls(() => h.reads.length > index);
+      if (action === "account") { h.setData([order("B-ONLY")]); await h.login(user(99)); }
+      else await h.browser.evaluate("window.refundQa.navigate('/profile?tab=personal&keep=1')");
+      await h.read(index, [refunded()], status); await h.settle();
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+      assert.equal(h.calls.refunds, 1);
+      if (action === "account") {
+        assert.equal(await h.browser.evaluate("window.refundQa.identity().accountId"), 99);
+        assert.deepEqual(await h.browser.evaluate("window.refundQa.snapshot().records"), []);
+      } else {
+        await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets')");
+        assert.equal(await renewedConsent(h), false);
+      }
+    } finally { await h.close(); }
+  }
+});
+
+rendered("Slice 4: reads started before recovery cannot overwrite a newly confirmed refunded fact", async () => {
+  const h = await fixture({ ignoreTicketAbort: true });
+  try {
+    await h.start(); await h.finish(null, 500); await h.settle();
+    h.setPause(true); const oldIndex = h.reads.length;
+    await h.browser.evaluate("document.querySelector('.my-tickets__tabs button').click();window.refundQa.mount(false)");
+    await h.settle(); await h.browser.evaluate("window.refundQa.mount(true)");
+    await h.waitCalls(() => h.reads.length > oldIndex);
+    const recoveryIndex = h.reads.length;
+    await h.browser.evaluate("window.refundQa.check('REFUND-A')"); await h.waitCalls(() => h.reads.length > recoveryIndex);
+    await h.read(recoveryIndex, [refunded()]);
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=past')");
+    await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+    await h.read(oldIndex, [order()]); await h.settle();
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__status--paid').length"), 0);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), true);
+    assert.equal(h.calls.refunds, 1);
   } finally { await h.close(); }
 });
