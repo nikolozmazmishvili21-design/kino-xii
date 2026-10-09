@@ -1,4 +1,19 @@
-import { apiRequest } from "./client.js";
+import { ApiError, apiRequest } from "./client.js";
+
+export async function searchMovies(query, { signal } = {}) {
+  const params = new URLSearchParams({ q: query });
+  const response = await apiRequest(`/search?${params}`, { signal });
+  const movies = response.data?.data;
+  // Title and slug are the minimum usable display/navigation data. Other Movie
+  // fields remain optional here; the UI must not invent their values.
+  if (response.status !== 200 || !Array.isArray(movies) || movies.length > 6
+    || !movies.every(movie => movie && typeof movie === "object" && !Array.isArray(movie)
+      && typeof movie.title === "string" && movie.title.trim()
+      && typeof movie.slug === "string" && movie.slug.trim())) {
+    throw new ApiError("The search response could not be read.", { status: response.status });
+  }
+  return movies;
+}
 
 export async function getFeaturedMovies({ signal } = {}) {
   const response = await apiRequest("/movies/featured", { signal });

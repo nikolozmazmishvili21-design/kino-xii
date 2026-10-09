@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext.js";
 import { ROUTES } from "../../routing/routes.js";
 import ProfileDropdown from "./ProfileDropdown.jsx";
@@ -8,6 +8,7 @@ import NavbarSearchShell from "./NavbarSearchShell.jsx";
 export default function Navbar({ onOpenAuth }) {
   const { isAuthenticated, user } = useAuth();
   const logoRef = useRef(null);
+  const location = useLocation();
 
   return (
     <header className="navbar">
@@ -19,7 +20,7 @@ export default function Navbar({ onOpenAuth }) {
           <Link className="navbar__sessions" to={ROUTES.sessions}>Sessions</Link>
         </div>
         <div className="navbar__right">
-          <NavbarSearchShell />
+          <NavbarSearchShell key={location.key} />
           {isAuthenticated && user ? (
             <ProfileDropdown user={user} logoutFocusRef={logoRef} />
           ) : (

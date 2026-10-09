@@ -3,6 +3,7 @@
 @import "./base.css";
 @import "./components/button.css";
 @import "./components/navbar.css";
+@import "./components/search.css";
 @import "./components/avatar.css";
 @import "./components/profile-dropdown.css";
 @import "./components/modal.css";
