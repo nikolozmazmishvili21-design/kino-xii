@@ -1,25 +1,34 @@
-.seat-selection--confirmation { position: relative; min-height: 599px; }
-.seat-selection--confirmation .seat-selection__content { align-items: center; justify-content: center; }
+/* Keep the shared dialog's viewport positioning and height cap. A minimum on
+   its content preserves the desktop geometry without overriding that cap. */
+.seat-selection--confirmation { position: fixed; min-height: 0; scrollbar-gutter: stable both-edges; }
+.seat-selection--confirmation .seat-selection__content { width: 100%; align-items: center; justify-content: center; }
 .seat-selection--confirmation .seat-selection__close { position: absolute; top: 32px; right: 32px; }
 .order-confirmation { width: 673px; max-width: 100%; min-height: 487px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; }
-.order-confirmation__header { display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center; }
+.order-confirmation__header { width: 365px; max-width: 100%; display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center; }
+.order-confirmation__message { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.order-confirmation__description { margin: 0; min-height: 36px; font-size: 14px; line-height: 1.3; color: var(--color-muted); }
 .order-confirmation__success { width: 56px; height: 56px; border-radius: 28px; background: var(--color-success); display: flex; align-items: center; justify-content: center; }
 .order-confirmation__success img { width: 32px; height: 32px; }
 .order-confirmation h2 { margin: 0; font-size: 24px; font-weight: 800; line-height: 26px; }
-.order-confirmation__reference { margin: 0; min-width: 190px; padding: 6px 12px; border-radius: 999px; background: var(--color-raised); font-size: 12px; font-weight: 600; line-height: 14px; overflow-wrap: anywhere; }
+.order-confirmation__reference { margin: 0; min-width: min(190px, 100%); max-width: 100%; padding: 6px 12px; border-radius: 999px; background: var(--color-raised); font-size: 12px; font-weight: 600; line-height: 14px; overflow-wrap: anywhere; }
 .order-confirmation__summary { width: 100%; min-height: 218px; padding: 20px; border-radius: 12px; background: var(--color-surface); display: flex; flex-direction: column; gap: 12px; }
 .order-confirmation__movie { display: flex; align-items: flex-start; gap: 10px; }
 .order-confirmation__movie .movie-image { width: 48px; height: 64px; flex: 0 0 48px; border-radius: 8px; }
 .order-confirmation__movie .movie-image__fallback { font-size: 9px; padding: 3px; }
-.order-confirmation__movie > div:last-child { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.order-confirmation__movie > div:last-child { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .order-confirmation__movie h3 { margin: 0; font-size: 14px; font-weight: 800; line-height: 15px; overflow-wrap: anywhere; }
 .order-confirmation__movie p { margin: 0; color: var(--color-muted); font-size: 12px; line-height: 1.3; overflow-wrap: anywhere; }
-.order-confirmation__tickets { margin: 0; padding: 12px 0; border-block: 1px solid var(--color-raised); list-style: none; display: flex; flex-direction: column; gap: 12px; }
-.order-confirmation__tickets li, .order-confirmation__total { display: flex; justify-content: space-between; gap: 12px; align-items: center; font-size: 12px; line-height: 1.3; }
-.order-confirmation__tickets span, .order-confirmation__total span { color: var(--color-muted); overflow-wrap: anywhere; }
-.order-confirmation__tickets strong { font-weight: 600; white-space: nowrap; }
+.order-confirmation__divider { width: 100%; height: 1px; flex-shrink: 0; background: var(--color-raised); }
+.order-confirmation__details { margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.order-confirmation__detail, .order-confirmation__total { display: flex; justify-content: space-between; gap: 12px; align-items: center; font-size: 12px; line-height: 1.3; }
+.order-confirmation__detail { min-height: 16px; }
+.order-confirmation__detail dt, .order-confirmation__detail dd { margin: 0; overflow-wrap: anywhere; }
+.order-confirmation__detail dt { flex-shrink: 0; }
+.order-confirmation__detail dt, .order-confirmation__total span { color: var(--color-muted); overflow-wrap: anywhere; }
+.order-confirmation__detail dd { min-width: 0; text-align: right; }
+.order-confirmation__seats { font-weight: 600; line-height: 13px; }
 .order-confirmation__total strong { font-size: 18px; font-weight: 800; line-height: 20px; white-space: nowrap; }
-.order-confirmation__actions { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+.order-confirmation__actions { width: 100%; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
 .order-confirmation__actions .button { padding-inline: 0; }
 .order-confirmation__actions .button--secondary { background: var(--tint-white); color: var(--color-text); }
 .order-confirmation__actions .button:first-child { width: 154px; }

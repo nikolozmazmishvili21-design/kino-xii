@@ -2,7 +2,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import process from "node:process";
 import { Buffer } from "node:buffer";
-import { writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "vite";
 import { connectProfileBrowser } from "./helpers/profileBrowser.js";
 
@@ -22,9 +22,10 @@ const serverOrder = { id: 7, reference: "SYNTHETIC-ORDER", status: "paid", isUpc
   tickets: [{ seatCode: "Z9", ticketType: { slug: "student", name: "Returned Student" }, price: 11.27 },
     { seatCode: "Z2", ticketType: { slug: "child", name: "Returned Child" }, price: 6.08 }] };
 const returnedTickets = [serverOrder, { ...serverOrder, id: 8, reference: "SYNTHETIC-REFUNDED", status: "refunded", isUpcoming: false, isRefundable: false }];
-let server, origin;
+let server, origin, confirmationFonts;
 before(async () => {
   if (!endpoint) return;
+  if (process.env.KINO_CONFIRMATION_QA_FONT_ASSETS) confirmationFonts = JSON.parse(await readFile(process.env.KINO_CONFIRMATION_QA_FONT_ASSETS, "utf8"));
   server = await createServer({ cacheDir: "node_modules/.cache/kino-checkout-browser", server: { host: "127.0.0.1", port: 0 },
     plugins: [{ name: "checkout-test-entry", transformIndexHtml: { order: "pre", handler: (html) => html.replace("/src/main.jsx", "/tests/fixtures/profileHarness.jsx")
       .replace("</head>", '<link rel="stylesheet" href="/src/styles/main.css"></head>') } }] });
@@ -32,7 +33,7 @@ before(async () => {
 });
 after(async () => { await server?.close(); });
 
-async function fixture({ checkout = true, path = "sessions?hold-qa", guest = false, initialUser = user, ticketReplies = [], ticketsPaused = false, savedUser = null } = {}) {
+async function fixture({ checkout = true, path = "sessions?hold-qa", guest = false, initialUser = user, ticketReplies = [], ticketsPaused = false, savedUser = null, width = 1728, height = 1027, pageScroll = 0 } = {}) {
   const browser = await connectProfileBrowser(endpoint);
   const calls = { orders: 0, deletes: 0, creates: 0, profileSaves: 0, tickets: 0, ticketQueries: [], ticketAccounts: [], forbidden: [], exceptions: [] };
   let currentUser = initialUser, held = null, pendingOrder = null, payload = null, pauseVerification = false, verification = null, pauseTickets = ticketsPaused;
@@ -46,6 +47,9 @@ async function fixture({ checkout = true, path = "sessions?hold-qa", guest = fal
   browser.on("Fetch.requestPaused", async (event) => {
     const url = new URL(event.request.url), method = event.request.method;
     if (url.origin === new URL(origin).origin) return browser.send("Fetch.continueRequest", { requestId: event.requestId });
+    const font = confirmationFonts?.assets[event.request.url];
+    if (font) return browser.send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: 200,
+      responseHeaders: [{ name: "Content-Type", value: font.contentType }, { name: "Access-Control-Allow-Origin", value: "*" }], body: font.base64 });
     if (method === "GET" && url.hostname === "fonts.googleapis.com") return fulfill(event, null, 204);
     if (url.hostname === "api.kinoxii.redberryinternship.ge") {
       if (method === "OPTIONS") return fulfill(event, null, 204);
@@ -95,7 +99,7 @@ async function fixture({ checkout = true, path = "sessions?hold-qa", guest = fal
   });
   await browser.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
   await browser.send("Page.addScriptToEvaluateOnNewDocument", { source: `window.kinoHoldQa = true; localStorage.clear(); sessionStorage.clear(); ${guest ? "" : "localStorage.setItem('kino-xii.auth.token','checkout-fixture-auth');"}` });
-  await browser.send("Emulation.setDeviceMetricsOverride", { width: 1728, height: 1027, deviceScaleFactor: 1, mobile: false });
+  await browser.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
   await browser.send("Page.navigate", { url: `${origin}${path}` });
   await browser.send("Page.bringToFront");
   const ready = async (expression) => {
@@ -107,6 +111,7 @@ async function fixture({ checkout = true, path = "sessions?hold-qa", guest = fal
     }
   };
   await ready(`window.holdQa && JSON.parse(document.getElementById('auth-probe').textContent).status === '${guest ? "guest" : "authenticated"}'`);
+  if (pageScroll) await browser.evaluate(`(()=>{const background=document.createElement('div');background.style.height='2000px';document.body.append(background);window.scrollTo(0,${pageScroll});})()`);
   if (checkout) {
   await browser.evaluate("document.getElementById('rerender').focus(); window.holdQa.open(10)");
   await ready("document.getElementById('booking-seat-1') && !document.getElementById('booking-seat-1').disabled");
@@ -419,6 +424,197 @@ rendered("Confirmation Close, Home and Tickets complete without release, repeat 
         assert.equal(await h.browser.evaluate("!document.querySelector('.order-confirmation')"), true);
         assert.equal((await h.snapshot()).state.order.phase, "idle");
       }
+    } finally { await h.close(); }
+  }
+});
+
+// Measure the actual successful Order transition in the existing providers and
+// shared Modal, rather than testing a substitute dialog or setting success state.
+for (const [width, height, pageScroll = 0] of [[1920, 1080], [1728, 900], [1280, 800], [768, 900], [390, 844], [1280, 360], [1728, 900, 600]]) {
+  rendered(`Confirmation layout: centered, unclipped and keyboard-reachable at ${width}x${height}${pageScroll ? " scrolled page" : ""}`, async () => {
+    const h = await fixture({ width, height, pageScroll });
+    try {
+      await h.pay(); await h.settle(201, { data: serverOrder });
+      await h.browser.wait("document.activeElement?.textContent === 'Booking confirmed!'");
+      await h.browser.evaluate("document.fonts.ready");
+      if (pageScroll) {
+        // Native dialog focus may scroll the underlying document when opened.
+        // Exercise an actual nonzero document offset after that focus settles.
+        await h.browser.evaluate(`window.scrollTo(0,${pageScroll})`);
+        assert.equal(await h.browser.evaluate("scrollY"), pageScroll);
+      }
+      const layout = await h.browser.evaluate(`(() => {
+        const dialog=document.querySelector('dialog[open]'), rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
+        const css=getComputedStyle(dialog), content=getComputedStyle(dialog.querySelector('.seat-selection__content'));
+        return {dialog:rect('dialog[open]'),content:rect('.seat-selection__content'),root:rect('.order-confirmation'),icon:rect('.order-confirmation__success'),
+          iconImage:rect('.order-confirmation__success img'),heading:rect('.order-confirmation h2'),reference:rect('.order-confirmation__reference'),
+          summary:rect('.order-confirmation__summary'),poster:rect('.order-confirmation .movie-image'),actions:rect('.order-confirmation__actions'),
+          primary:rect('.order-confirmation .button--primary'),secondary:rect('.order-confirmation .button--secondary'),close:rect('.seat-selection__close'),
+          scroll:{top:dialog.scrollTop,height:dialog.scrollHeight,clientHeight:dialog.clientHeight,width:dialog.scrollWidth,clientWidth:dialog.clientWidth},
+          css:{position:css.position,width:css.width,height:css.height,minHeight:css.minHeight,maxHeight:css.maxHeight,inset:css.inset,margin:css.margin,overflow:css.overflow,transform:css.transform,background:css.backgroundColor,radius:css.borderRadius,contentWidth:content.width},
+          parent:{tag:dialog.parentElement.tagName,transform:getComputedStyle(dialog.parentElement).transform},
+          headingStyle:{size:getComputedStyle(document.querySelector('.order-confirmation h2')).fontSize,weight:getComputedStyle(document.querySelector('.order-confirmation h2')).fontWeight},
+          pageScroll:scrollY,pageOverflow:document.documentElement.scrollWidth>innerWidth,text:document.querySelector('.order-confirmation').textContent};
+      })()`);
+      const output = process.env.KINO_CONFIRMATION_QA_OUTPUT ?? "node_modules/.cache/kino-checkout-browser";
+      const phase = process.env.KINO_CONFIRMATION_QA_PHASE ?? "after";
+      await mkdir(output, { recursive: true });
+      const name = `${phase}-${width}x${height}${pageScroll ? "-scrolled" : ""}`;
+      await writeFile(`${output}/${name}.json`, JSON.stringify(layout, null, 2));
+      const screenshot = await h.browser.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      await writeFile(`${output}/${name}.png`, Buffer.from(screenshot.data, "base64"));
+
+      const near = (actual, expected, label) => assert.ok(Math.abs(actual - expected) < 1, `${label}: ${actual} versus ${expected}`);
+      near(layout.dialog.width, Math.min(1146, width - 32), "dialog width");
+      near(layout.dialog.x + layout.dialog.width / 2, width / 2, "horizontal viewport center");
+      near(layout.dialog.y + layout.dialog.height / 2, height / 2, "vertical viewport center");
+      assert.ok(layout.dialog.y >= 16 && layout.dialog.bottom <= height - 16);
+      assert.equal(layout.css.position, "fixed");
+      assert.deepEqual(layout.parent, { tag: "BODY", transform: "none" });
+      assert.equal(layout.css.background, "rgb(7, 12, 28)"); assert.equal(layout.css.radius, "28px");
+      assert.deepEqual(layout.headingStyle, { size: "24px", weight: "800" });
+      if (confirmationFonts && width === 1728) {
+        await h.browser.send("DOM.enable"); await h.browser.send("CSS.enable");
+        const { root } = await h.browser.send("DOM.getDocument");
+        const { nodeId } = await h.browser.send("DOM.querySelector", { nodeId: root.nodeId, selector: ".order-confirmation h2" });
+        const { fonts } = await h.browser.send("CSS.getPlatformFontsForNode", { nodeId });
+        assert.ok(fonts.some(font => font.isCustomFont && font.familyName.startsWith("Archivo") && font.glyphCount > 0));
+      }
+      assert.deepEqual([layout.icon.width, layout.icon.height, layout.iconImage.width, layout.iconImage.height], [56, 56, 32, 32]);
+      near(layout.summary.width, Math.min(673, layout.content.width), "summary width");
+      near(layout.summary.x + layout.summary.width / 2, width / 2, "summary center");
+      assert.deepEqual([layout.poster.width, layout.poster.height], [48, 64]);
+      assert.ok(layout.icon.y >= layout.dialog.y && layout.icon.bottom <= layout.heading.y);
+      assert.ok(layout.heading.y >= layout.dialog.y && layout.heading.bottom <= layout.dialog.bottom);
+      assert.ok(layout.reference.y >= layout.heading.bottom && layout.reference.bottom <= layout.summary.y);
+      assert.ok(layout.actions.y >= layout.summary.bottom + 23);
+      assert.equal(layout.scroll.width, layout.scroll.clientWidth); assert.equal(layout.pageOverflow, false);
+      if (height >= 800) {
+        if (width >= 768) near(layout.dialog.height, 599, "normal desktop/tablet modal height");
+        near(layout.root.y + layout.root.height / 2, height / 2, "content center");
+        assert.ok(layout.secondary.bottom <= layout.dialog.bottom);
+        if (width >= 768) near(layout.icon.y - layout.dialog.y, 56, "icon top inset");
+        else assert.ok(layout.icon.y - layout.dialog.y >= 32, "mobile content keeps safe padding as it grows");
+      } else assert.ok(layout.scroll.height > layout.scroll.clientHeight, "short viewport must scroll internally");
+      for (const value of ["SYNTHETIC-ORDER", "Returned Film", "Returned Venue", "Returned Format", "Returned Language", "Z9", "Z2", "Returned Student", "Returned Child", "₾ 11.27", "₾ 6.08", "₾ 87.65"]) assert.ok(layout.text.includes(value), value);
+      assert.doesNotMatch(layout.text, /email|sent|Fixture Film|7\.13|100\.47/);
+      for (let index=0; index<3; index++) {
+        await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+        await h.browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+        assert.equal(await h.browser.evaluate("(()=>{const e=document.activeElement,r=e.getBoundingClientRect(),d=document.querySelector('dialog').getBoundingClientRect();return !!e.closest('dialog')&&r.top>=d.top&&r.bottom<=d.bottom&&r.left>=d.left&&r.right<=d.right;})()"), true, "Tab target must remain visible inside the modal");
+      }
+      assert.equal(await h.browser.evaluate("document.activeElement.matches('.seat-selection__close')"), true);
+      await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await h.browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await h.browser.wait("!document.querySelector('dialog[open]')");
+      assert.equal(await h.browser.evaluate("document.activeElement.id"), "rerender");
+      assert.equal(h.calls.orders, 1); assert.equal(h.calls.deletes, 0); await h.safe();
+    } finally { await h.close(); }
+  });
+}
+
+for (const [name, width, tickets, expectedSeats, expectedTypes] of [
+  ["single Adult", 1920, [{ seatCode: "A4", ticketType: { slug: "adult", name: "Adult" }, price: 23 }], "A4", "1 x Adult"],
+  ["mixed types by name", 1920, [
+    { seatCode: "Q7", ticketType: { slug: "child", name: "Child" }, price: 5.15 },
+    { seatCode: "B3", ticketType: { slug: "adult", name: "Adult" }, price: 23 },
+    { seatCode: "A4", ticketType: { slug: "another-child-code", name: "Child" }, price: 6.08 },
+  ], "Q7, B3, A4", "2 x Child, 1 x Adult"],
+  ["server names as literal text", 1728, [
+    { seatCode: "Z2", ticketType: { slug: "student", name: "__proto__" }, price: 11.27 },
+    { seatCode: "Z9", ticketType: { slug: "child", name: "<Adult & Child>" }, price: 6.08 },
+  ], "Z2, Z9", "1 x __proto__, 1 x <Adult & Child>"],
+]) rendered(`Confirmation inner card: ${name} at ${width}px uses ordered seats, deterministic quantities and exact Figma rows`, async () => {
+  const h = await fixture({ width, height: 1080 });
+  try {
+    // A deliberately different server total proves the UI does not calculate it
+    // from the returned per-ticket amounts or the earlier Hold preview.
+    const returned = { ...serverOrder, tickets, totalPrice: 91.23,
+      session: { ...serverOrder.session, movie: { ...serverOrder.session.movie, posterUrl: ticketPoster } } };
+    await h.pay(); await h.settle(201, { data: returned });
+    await h.browser.wait("document.activeElement?.textContent === 'Booking confirmed!'");
+    await h.browser.evaluate("document.fonts.ready");
+    await h.browser.wait("document.querySelector('.order-confirmation__movie img')?.naturalWidth === 300");
+    const layout = await h.browser.evaluate(`(()=>{
+      const card=document.querySelector('.order-confirmation__summary'), rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right};};
+      const row=[...card.querySelectorAll('.order-confirmation__detail')], dividers=[...card.querySelectorAll('[role=separator]')];
+      return {card:rect(card),movie:rect(card.querySelector('.order-confirmation__movie')),poster:rect(card.querySelector('.movie-image')),
+        rows:row.map(e=>({label:e.querySelector('dt').textContent,value:e.querySelector('dd').textContent,rect:rect(e),valueRect:rect(e.querySelector('dd')),
+          valueColor:getComputedStyle(e.querySelector('dd')).color,labelColor:getComputedStyle(e.querySelector('dt')).color,valueWeight:getComputedStyle(e.querySelector('dd')).fontWeight,
+          fontSize:getComputedStyle(e).fontSize,textAlign:getComputedStyle(e.querySelector('dd')).textAlign})),
+        dividers:dividers.map(e=>({rect:rect(e),color:getComputedStyle(e).backgroundColor})),total:rect(card.querySelector('.order-confirmation__total')),
+        totalText:card.querySelector('.order-confirmation__total strong').textContent,totalStyle:{size:getComputedStyle(card.querySelector('.order-confirmation__total strong')).fontSize,weight:getComputedStyle(card.querySelector('.order-confirmation__total strong')).fontWeight},
+        style:{padding:getComputedStyle(card).padding,radius:getComputedStyle(card).borderRadius,background:getComputedStyle(card).backgroundColor,gap:getComputedStyle(card).gap},
+        sequence:[...card.children].map(e=>e.className),text:card.textContent,accessibleTickets:[...document.querySelectorAll('[aria-label="Purchased tickets"] li')].map(e=>e.textContent),
+        movieStyle:{gap:getComputedStyle(card.querySelector('.order-confirmation__movie')).gap,infoWidth:rect(card.querySelector('.order-confirmation__movie > div:last-child')).width,
+          infoGap:getComputedStyle(card.querySelector('.order-confirmation__movie > div:last-child')).gap,titleSize:getComputedStyle(card.querySelector('h3')).fontSize,
+          titleWeight:getComputedStyle(card.querySelector('h3')).fontWeight,titleHeight:getComputedStyle(card.querySelector('h3')).lineHeight,
+          metadataSize:getComputedStyle(card.querySelector('.order-confirmation__movie p')).fontSize,metadataColor:getComputedStyle(card.querySelector('.order-confirmation__movie p')).color,
+          posterRadius:getComputedStyle(card.querySelector('.movie-image')).borderRadius,posterAlt:card.querySelector('img').alt},
+        dialog:rect(document.querySelector('dialog')),imageFit:getComputedStyle(card.querySelector('img')).objectFit};})()`);
+    const output=process.env.KINO_CONFIRMATION_QA_OUTPUT ?? "node_modules/.cache/kino-checkout-browser";
+    const phase=process.env.KINO_CONFIRMATION_QA_PHASE ?? "after";
+    await mkdir(output,{recursive:true});
+    const file=`${output}/${phase}-inner-${width}-${name.replaceAll(' ','-')}`;
+    await writeFile(file+'.json',JSON.stringify(layout,null,2));
+    const {data}=await h.browser.send("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+    await writeFile(file+'.png',Buffer.from(data,"base64"));
+    assert.deepEqual(layout.rows.map(({label,value})=>({label,value})),[{label:"Seats",value:expectedSeats},{label:"Tickets",value:expectedTypes}]);
+    assert.equal(layout.totalText,"₾ 91.23");
+    assert.deepEqual(layout.sequence,["order-confirmation__movie","order-confirmation__divider","order-confirmation__details","order-confirmation__divider","order-confirmation__total"]);
+    assert.deepEqual(layout.style,{padding:"20px",radius:"12px",background:"rgb(30, 32, 49)",gap:"12px"});
+    assert.deepEqual([layout.card.width,layout.card.height,layout.poster.width,layout.poster.height],[673,218,48,64]);
+    assert.equal(layout.imageFit,"cover");
+    assert.deepEqual(layout.movieStyle,{gap:"10px",infoWidth:575,infoGap:"8px",titleSize:"14px",titleWeight:"800",titleHeight:"15px",
+      metadataSize:"12px",metadataColor:"rgb(169, 169, 169)",posterRadius:"8px",posterAlt:"Returned Film poster"});
+    assert.deepEqual(layout.totalStyle,{size:"18px",weight:"800"});
+    const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1,`${actual} versus ${expected}`);
+    near(layout.movie.y-layout.card.y,20); near(layout.movie.x-layout.card.x,20); near(layout.movie.height,64);
+    near(layout.dividers[0].rect.y-layout.card.y,96); near(layout.dividers[1].rect.y-layout.card.y,165);
+    for(const divider of layout.dividers) {near(divider.rect.height,1);near(divider.rect.width,633);assert.equal(divider.color,"rgb(42, 44, 61)");}
+    near(layout.rows[0].rect.y-layout.card.y,109);near(layout.rows[1].rect.y-layout.card.y,137);near(layout.total.y-layout.card.y,178);
+    for(const row of layout.rows) {
+      near(row.rect.height,16); near(row.valueRect.right,layout.card.right-20);
+      assert.equal(row.textAlign,"right");assert.equal(row.fontSize,"12px");
+      assert.equal(row.labelColor,"rgb(169, 169, 169)");assert.equal(row.valueColor,"rgb(255, 255, 255)");
+    }
+    assert.equal(layout.rows[0].valueWeight,"600");assert.equal(layout.rows[1].valueWeight,"400");
+    assert.deepEqual([layout.dialog.width,layout.dialog.height],[1146,599]);near(layout.dialog.x+573,width/2);near(layout.dialog.y+299.5,540);
+    assert.deepEqual(layout.accessibleTickets,tickets.map(ticket=>`Seat ${ticket.seatCode} · ${ticket.ticketType.name}₾ ${ticket.price}`));
+    assert.doesNotMatch(layout.text,/Seat |email|sent/);
+    assert.equal(h.calls.orders,1);assert.equal(h.calls.deletes,0);await h.safe();
+  } finally {await h.close();}
+});
+
+rendered("Confirmation layout: long server Order fits mobile and short viewports; both actions and Tickets handoff remain reachable", async () => {
+  const returned = { ...serverOrder, reference: "SYNTHETIC-".repeat(20), session: { ...serverOrder.session,
+    movie: { title: "Long returned movie title ".repeat(6), posterUrl: null } },
+    tickets: serverOrder.tickets.map(ticket => ({ ...ticket, ticketType: { ...ticket.ticketType, name: "Long returned ticket type ".repeat(6) } })) };
+  for (const height of [844, 360]) {
+    const h = await fixture({ width: 390, height, ticketReplies: [{ body: { data: [returned] } }] });
+    try {
+      await h.pay(); await h.settle(201, { data: returned });
+      await h.browser.wait("document.activeElement?.textContent === 'Booking confirmed!'");
+      const initial = await h.browser.evaluate("(()=>{const d=document.querySelector('dialog'),r=d.getBoundingClientRect(),icon=d.querySelector('.order-confirmation__success').getBoundingClientRect();return {top:r.top,bottom:r.bottom,scrolling:d.scrollHeight>d.clientHeight,overflow:d.scrollWidth>d.clientWidth,iconVisible:icon.top>=r.top&&icon.bottom<=r.bottom,text:d.textContent};})()");
+      assert.ok(initial.top >= 16 && initial.bottom <= height - 16);
+      assert.equal(initial.scrolling, true); assert.equal(initial.overflow, false); assert.equal(initial.iconVisible, true);
+      assert.ok(initial.text.includes(returned.reference)); assert.ok(initial.text.includes(returned.session.movie.title));
+      assert.ok(initial.text.includes(returned.tickets[0].ticketType.name));
+      await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      await h.browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      assert.equal(await h.browser.evaluate("document.activeElement.textContent"), "View my tickets");
+      await h.browser.evaluate("document.querySelector('.order-confirmation .button--secondary').focus()");
+      assert.equal(await h.browser.evaluate("(()=>{const r=document.activeElement.getBoundingClientRect(),d=document.querySelector('dialog').getBoundingClientRect();return r.top>=d.top&&r.bottom<=d.bottom&&r.left>=d.left&&r.right<=d.right;})()"), true);
+      await h.browser.evaluate("document.querySelector('.order-confirmation .button--primary').focus()");
+      const output=process.env.KINO_CONFIRMATION_QA_OUTPUT ?? "node_modules/.cache/kino-checkout-browser";
+      await mkdir(output, { recursive: true });
+      const { data } = await h.browser.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      await writeFile(`${output}/after-long-390x${height}-actions.png`, Buffer.from(data, "base64"));
+      await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
+      await h.browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await h.browser.wait("location.pathname === '/profile' && location.search === '?tab=tickets' && document.querySelector('.my-tickets__order') && !document.querySelector('dialog[open]')");
+      assert.ok((await h.browser.evaluate("document.querySelector('.my-tickets__order').textContent")).includes(returned.reference));
+      assert.equal(h.calls.orders, 1); assert.equal(h.calls.tickets, 1); assert.equal(h.calls.deletes, 0); await h.safe();
     } finally { await h.close(); }
   }
 });
