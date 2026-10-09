@@ -195,6 +195,17 @@ export function createRefundRuntime({
       && account(evidence.guard.accountId).eligibility.get(evidence.identity.reference) === evidence
       && matchesRefundIdentity(order, evidence.identity) && refundEligible(order, evidence.identity));
   }
+  // Read-only presentation authority. Opening a dialog neither creates consent
+  // nor acknowledges the warning; only its explicit confirm action may do that.
+  function confirmationDetails(order) {
+    const current = auth(), identity = captureRefundIdentity(order);
+    const state = current && account(current.accountId), record = state?.records.get(identity?.reference);
+    if (notifying || pending || !current || !isContextCurrent() || !refundEligible(order, identity)
+      || record?.reportedRefunded || (record && !evidenceCurrent(state.eligibility.get(identity.reference), order))) return null;
+    return Object.freeze({ accountId: current.accountId, authGeneration: current.generation,
+      intentGeneration: consentGeneration, readGeneration: state.generation, identity,
+      warning: record?.priorUncertainty ? REFUND_RECONFIRMATION_WARNING : null });
+  }
   function createConsent(order, { confirmed = false, warningAcknowledged = false } = {}) {
     checkDeadline();
     const current = auth(), identity = captureRefundIdentity(order);
@@ -313,11 +324,11 @@ export function createRefundRuntime({
     consentAuth = null;
     consentEvidence = null;
     account(request.accountId).records.set(request.identity.reference, Object.freeze({
-      ...previous,
       identity: request.identity, accountId: request.accountId, requestId: request.id,
-      // Settlement metadata belongs to this attempt, never its predecessor.
+      authGeneration: request.auth.generation, consentGeneration: request.consentGeneration,
       disposition: null, settledGeneration: null,
       phase: "submitting", priorUncertainty: Boolean(previous?.priorUncertainty), reportedRefunded: false, replayCount, continuation: null,
+      reason: null, message: null, displayStatus: null, recoveryPurpose: null,
     }));
     notify();
     if (!sameAuth(request.auth) || !isContextCurrent() || !request.allowContinuation
@@ -627,13 +638,14 @@ export function createRefundRuntime({
     notify();
   }
   return Object.freeze({
-    createConsent, submit: (authorization, order) => dispatch(authorization, order),
+    createConsent, confirmationDetails, submit: (authorization, order) => dispatch(authorization, order),
     snapshot, readGuard, isReadCurrent, syncAuth,
     cancelIntent, logout, checkDeadline, leaveContext, authenticationSucceeded, retryVerification,
     checkStatus, invalidateEligibility, observeTickets,
     hasContinuation: () => Boolean(retainedIntent() || recovery),
     hasReadRecovery: () => Boolean(recovery),
     isRecovering: () => Boolean(verification?.recovery),
+    isVerifying: () => Boolean(verification),
     beginExplicitAuthentication() {
       if (!retainedIntent() && !recovery) { setAuthGate(CLOSED_AUTH); notify(); }
     },

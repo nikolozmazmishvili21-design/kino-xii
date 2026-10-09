@@ -20,12 +20,14 @@ export default function useTickets(consumeRecovery) {
   const [read, setRead] = useState({ owner: null, attempt: -1, status: "idle", data: [], error: null });
   const recovery = useRef(null), sequence = useRef(0), controllerRef = useRef(null), withheldAuthRead = useRef(null);
   const retry = useCallback(() => {
-    if (refund?.hasReadRecovery()) { void refund.retryVerification(); return; }
+    if (refund?.hasContinuation()) { void refund.retryVerification(); return; }
     const details = refund?.snapshot().records.find(record => record.reportedRefunded && record.displayStatus !== "ready");
     if (details) { void refund.checkStatus(details.identity.reference); return; }
     setAttempt((value) => value + 1);
   }, [refund]);
   const generation = barrier.generation;
+  const coordinatedPhase = refund?.hasContinuation()
+    ? barrier.records.find(record => record.continuation || record.recoveryPurpose)?.phase ?? "waiting" : null;
   const authGeneration = user ? getSessionIdentity?.()?.generation ?? null : null;
 
   useEffect(() => {
@@ -74,7 +76,7 @@ export default function useTickets(consumeRecovery) {
     // compete with it or route a second 401 through Profile's generic gate.
     if (needsAuthCoordination && (refund?.hasContinuation() || withheldAuthRead.current !== generation)) {
       withheldAuthRead.current = generation;
-      setRead({ owner: user, attempt, authGeneration, generation, status: refund?.isRecovering() ? "loading" : "error", data: [],
+      setRead({ owner: user, attempt, authGeneration, generation, status: refund?.isVerifying() ? "loading" : "error", data: [],
         error: "Unable to load your tickets. Try again.", adopted: false });
       return;
     }
@@ -130,7 +132,7 @@ export default function useTickets(consumeRecovery) {
     // Read state is an output, not a fetch dependency. Generation changes and
     // explicit Retry each own one replacement request, never completion loops.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, attempt, authGeneration, generation, refund, isCurrentUser, reauthenticateProfile, consumeRecovery]);
+  }, [user, attempt, authGeneration, generation, coordinatedPhase, refund, isCurrentUser, reauthenticateProfile, consumeRecovery]);
 
   // Mask before cleanup effects: account, session, Retry and mutation generations
   // are all required, including reads that began during a pending mutation.

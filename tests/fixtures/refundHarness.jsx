@@ -9,6 +9,7 @@ import ProfilePage from "../../src/pages/ProfilePage.jsx";
 import { useRefund } from "../../src/tickets/RefundContext.js";
 import { useBooking } from "../../src/booking/BookingContext.js";
 import { useBookingEntry } from "../../src/auth/BookingEntryContext.js";
+import "../../src/styles/main.css";
 
 export function Probe() {
   const auth = useAuth(), runtime = useRefund(), navigate = useNavigate(), location = useLocation();

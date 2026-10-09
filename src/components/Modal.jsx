@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 
 const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-export default function Modal({ children, className = "", labelledBy, describedBy, onClose, openerRef, focusKey }) {
+export default function Modal({ children, className = "", labelledBy, describedBy, onClose, openerRef, getFallbackFocus, focusKey }) {
   const dialogRef = useRef(null);
   const pointerStartedOutside = useRef(false);
   const closeRequested = useRef(false);
@@ -18,9 +18,11 @@ export default function Modal({ children, className = "", labelledBy, describedB
       closeRequested.current = true;
       dialog.close();
       document.body.classList.remove("modal-open");
-      if (opener?.isConnected) opener.focus();
+      // Refund may move its card away; resolve the surviving logical control at close.
+      const restore = opener?.isConnected && !opener.disabled ? opener : getFallbackFocus?.();
+      if (restore?.isConnected) restore.focus();
     };
-  }, [openerRef]);
+  }, [openerRef, getFallbackFocus]);
 
   useLayoutEffect(() => {
     dialogRef.current.querySelector("[data-initial-focus]")?.focus();

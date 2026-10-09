@@ -84,6 +84,47 @@ test("uncertain POST -> fresh paid GET -> new warned consent -> exactly one sepa
   assert.doesNotMatch(JSON.stringify(h.runtime.snapshot()), /synthetic-|token|totalPrice|tickets|movie|promise|callback/);
 });
 
+test("NB-6: a renewed pending record contains current identity and no previous refusal or recovery UI metadata", async t => {
+  const h = harness(t); await h.start(); await h.check();
+  h.post(() => response({ message: "Previous 422 business refusal" }, 422));
+  await h.start(true);
+  const previous = h.record();
+  assert.equal(previous.message, "Previous 422 business refusal");
+  assert.equal(previous.reason, "refused");
+  h.authenticate(12, 5); await h.check();
+  const consent = h.authorize(true), pending = deferred();
+  assert.ok(consent); h.post(() => pending.promise);
+  const operation = h.runtime.submit(consent, order()), current = h.record();
+  assert.equal(current.phase, "submitting");
+  assert.equal(current.authGeneration, 5);
+  assert.equal(current.consentGeneration, consent.consentGeneration);
+  assert.ok(current.consentGeneration > previous.consentGeneration);
+  for (const field of ["reason", "message", "displayStatus", "recoveryPurpose", "disposition", "settledGeneration"]) {
+    assert.equal(current[field], null, field);
+  }
+  assert.equal(current.priorUncertainty, true);
+  assert.equal(h.runtime.hasActivePost(), true);
+  assert.equal((await h.check()).kind, "blocked");
+  pending.resolve(response({ data: refunded() })); await operation;
+});
+
+test("presentation can inspect the exact warning without consent, notification, GET or POST", async t => {
+  const h = harness(t); await h.start(); await h.check();
+  let notifications = 0; const off = h.runtime.subscribe(() => notifications++);
+  const before = h.runtime.snapshot(), guard = h.runtime.readGuard();
+  const first = h.runtime.confirmationDetails(order()), second = h.runtime.confirmationDetails(order());
+  assert.equal(first.warning, REFUND_RECONFIRMATION_WARNING);
+  assert.deepEqual(second, first);
+  assert.equal(h.runtime.snapshot(), before);
+  assert.equal(h.runtime.snapshot().confirmation, null);
+  assert.equal(h.runtime.isReadCurrent(guard), true);
+  assert.equal(notifications, 0); off();
+  assert.equal(h.posts.length, 1); assert.equal(h.gets.length, 1);
+  assert.equal(h.authorize(), null);
+  h.runtime.invalidateEligibility();
+  assert.equal(h.runtime.confirmationDetails(order()), null);
+});
+
 for (const preceding of ["settled", "deadline-retired"]) {
   for (const ending of ["settled", "deadline-retired"]) test("renewed POST clears " + preceding + " metadata until its own " + ending, async t => {
     const h = harness(t), earlier = deferred(), newer = deferred();

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import process from "node:process";
 import { Buffer } from "node:buffer";
 import { createServer } from "vite";
+import { mkdir, writeFile } from "node:fs/promises";
 import { connectProfileBrowser } from "./helpers/profileBrowser.js";
 
 const endpoint = process.env.KINO_PROFILE_QA_CDP_URL;
@@ -29,10 +30,10 @@ before(async () => {
 });
 after(async () => { await server?.close(); });
 
-async function fixture({ guest = false, stale = false, pauseTickets = false, pauseMe = false, ignoreTicketAbort = false } = {}) {
+async function fixture({ guest = false, stale = false, pauseTickets = false, pauseMe = false, ignoreTicketAbort = false, initialOrders = [order()] } = {}) {
   const browser = await connectProfileBrowser(endpoint);
   const calls = { refunds: 0, tickets: 0, me: 0, logouts: 0, deletes: 0, forbidden: [], exceptions: [] };
-  let freshUser = user(), data = [order()], refundRequest, meRequest, loginRequest;
+  let freshUser = user(), data = initialOrders, refundRequest, meRequest, loginRequest;
   let loginStatus = 200, pauseLogin = false;
   let ticketStatus = 200;
   const chronology = [], ticketCredentials = [], refundCredentials = [];
@@ -168,9 +169,9 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
       await interception("Fetch.failRequest", { requestId: refundRequest.requestId, errorReason: "Failed" });
       await browser.wait("!window.refundQa.busy()");
     },
-    async finish(body = refunded(), status = 200) {
+    async finish(body = refunded(), status = 200, message = "Synthetic refusal") {
       assert.ok(refundRequest);
-      const invalidated = await fulfill(refundRequest, status === 200 ? { data: body } : { message: "Synthetic refusal" }, status);
+      const invalidated = await fulfill(refundRequest, status === 200 ? { data: body } : { message }, status);
       if (invalidated instanceof Error && await browser.evaluate("window.refundQa.busy()")) throw invalidated;
       await browser.wait("!window.refundQa.busy()");
     },
@@ -184,6 +185,11 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
     },
     async expire() { await browser.evaluate("window.refundQaClock=30000;window.refundQa.deadline()"); },
     async settle() { await browser.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(r,0))))"); },
+    async capture(name) {
+      const { data } = await browser.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      await mkdir("node_modules/.cache/kino-refund-ui", { recursive: true });
+      await writeFile("node_modules/.cache/kino-refund-ui/" + name + ".png", Buffer.from(data, "base64"));
+    },
     async close() {
       await cleanup();
       if (handlerErrors.length) throw new AggregateError(handlerErrors, "Fixture interception failed.");
@@ -193,7 +199,7 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
   };
 }
 
-rendered("AppShell owns one dormant runtime through StrictMode, filters, consumers and Tickets remounts", async () => {
+rendered("AppShell owns one runtime through StrictMode, filters, consumers and Tickets remounts without dispatch", async () => {
   const h = await fixture();
   try {
     await h.browser.wait("document.querySelector('.my-tickets__order')");
@@ -814,7 +820,8 @@ rendered("Slice 4: uncertain POST, fresh paid GET and explicit warned consent se
     h.setData([order()]); await checkRecovery(h, "retry_available");
     assert.ok(h.calls.tickets > before); assert.equal(h.calls.refunds, 1);
     assert.equal(await renewedConsent(h, false), false);
-    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order button').length"), 0);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__refund:not(:disabled)').length"), 1);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
     assert.match(await h.browser.evaluate("location.search"), /keep=1/);
     assert.equal(await renewedConsent(h), true); await h.waitCalls(() => h.calls.refunds === 2);
     assert.equal(await renewedConsent(h), false);
@@ -954,22 +961,513 @@ rendered("Slice 4: account switch and navigation fence non-aborting recovery res
   }
 });
 
-rendered("Slice 4: reads started before recovery cannot overwrite a newly confirmed refunded fact", async () => {
+for (const completionOrder of ["arrival", "reverse"]) rendered("Slice 4: reads started before recovery cannot overwrite a newly confirmed refunded fact (" + completionOrder + " completion)", async () => {
   const h = await fixture({ ignoreTicketAbort: true });
   try {
     await h.start(); await h.finish(null, 500); await h.settle();
+    const initiated = [], completed = new Set();
+    h.browser.on("Network.requestWillBeSent", event => {
+      if (event.request.method === "GET" && new URL(event.request.url).pathname === "/api/tickets") initiated.push(event.requestId);
+    });
+    h.browser.on("Network.loadingFinished", event => completed.add(event.requestId));
+    await h.browser.send("Network.enable");
     h.setPause(true); const oldIndex = h.reads.length;
     await h.browser.evaluate("document.querySelector('.my-tickets__tabs button').click();window.refundQa.mount(false)");
     await h.settle(); await h.browser.evaluate("window.refundQa.mount(true)");
-    await h.waitCalls(() => h.reads.length > oldIndex);
+    // StrictMode starts two ordinary reads. Both must be identified and paused
+    // before status verification; the first arrival is not a remount barrier.
+    await h.waitCalls(() => initiated.length >= 2 && h.reads.length >= oldIndex + 2);
+    assert.equal(h.reads.length, oldIndex + 2);
+    const ordinary = h.reads.slice(oldIndex);
+    assert.deepEqual(new Set(ordinary.map(request => request.networkId)), new Set(initiated));
+    assert.equal(new Set(ordinary.map(request => request.requestId)).size, 2);
+    assert.equal(initiated.length, 2);
     const recoveryIndex = h.reads.length;
-    await h.browser.evaluate("window.refundQa.check('REFUND-A')"); await h.waitCalls(() => h.reads.length > recoveryIndex);
+    await h.browser.evaluate("window.refundQa.check('REFUND-A')");
+    await h.waitCalls(() => initiated.length >= 3 && h.reads.length > recoveryIndex);
+    assert.equal(h.reads.length, recoveryIndex + 1);
+    const recovery = h.reads[recoveryIndex];
+    assert.equal(recovery.networkId, initiated[2], "the recovery GET started after both ordinary GETs");
+    assert.equal(new Set([...ordinary, recovery].map(request => request.requestId)).size, 3);
+    for (const request of [...ordinary, recovery]) {
+      assert.equal(request.request.method, "GET");
+      assert.equal(new URL(request.request.url).pathname, "/api/tickets");
+      assert.equal(new URL(request.request.url).search, "");
+      assert.equal(new Headers(request.request.headers).get("Authorization"), h.ticketCredentials.at(-1));
+    }
     await h.read(recoveryIndex, [refunded()]);
     await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=past')");
     await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
-    await h.read(oldIndex, [order()]); await h.settle();
-    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__status--paid').length"), 0);
-    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), true);
+    const generation = await h.browser.evaluate("window.refundQa.snapshot().generation");
+    for (const request of completionOrder === "arrival" ? ordinary : ordinary.toReversed()) {
+      await h.read(h.reads.indexOf(request), [order()]);
+      await h.waitCalls(() => completed.has(request.networkId));
+      await h.settle();
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__status--paid').length"), 0);
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__status--refunded').length"), 1);
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), true);
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().generation"), generation);
+    }
+    assert.equal(initiated.length, 3, "stale completions cannot start replacement reads");
     assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+async function uiButton(h, scope, label) {
+  const expression = "[...document.querySelectorAll(" + JSON.stringify(scope + " button") + ")].find(button=>button.textContent.trim()===" + JSON.stringify(label) + ")";
+  await h.browser.wait(expression);
+  assert.equal(await h.browser.evaluate(expression + ".disabled"), false, label + " is enabled");
+  await h.browser.evaluate(expression + ".click()");
+}
+async function openRefundUi(h) {
+  await h.browser.wait("document.querySelector('.my-tickets__refund:not(:disabled)')");
+  await h.browser.evaluate("document.querySelector('.my-tickets__refund:not(:disabled)').focus();document.querySelector('.my-tickets__refund:not(:disabled)').click()");
+  await h.browser.wait("document.querySelector('.refund-dialog[open] form')");
+}
+async function confirmRefundUi(h, double = false) {
+  const expected = h.calls.refunds + 1;
+  await h.browser.evaluate("(() => { const button=document.querySelector('.refund-dialog [type=submit]'); button.click();" + (double ? "button.click();button.form?.requestSubmit();" : "") + "})()");
+  await h.waitCalls(() => h.calls.refunds === expected);
+  await h.browser.wait("document.querySelector('.refund-dialog [aria-busy=true]')");
+}
+async function checkRefundUi(h, expected = "retry_available", scope = ".refund-dialog") {
+  const reads = h.calls.tickets;
+  await uiButton(h, scope, "Check refund status");
+  await h.waitCalls(() => h.calls.tickets > reads);
+  await h.browser.wait("window.refundQa.snapshot().records[0]?.phase === " + JSON.stringify(expected));
+}
+async function key(h, value, shift = false) {
+  const code = { Tab: 9, Escape: 27, Enter: 13 }[value];
+  await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: value, code: value, windowsVirtualKeyCode: code, modifiers: shift ? 8 : 0,
+    ...(value === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}) });
+  await h.browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: value, code: value, windowsVirtualKeyCode: code, modifiers: shift ? 8 : 0 });
+}
+async function backdrop(h) {
+  await h.browser.send("Input.dispatchMouseEvent", { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
+  await h.browser.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 1, y: 1, button: "left", clickCount: 1 });
+}
+
+rendered("Slice 5: server flags alone enable Refund; Past/refunded and malformed data cannot authorize an action", async () => {
+  const eligible = { ...order("SERVER-OLD-DATE"), session: { ...order().session, date: "2000-01-01" } };
+  const notRefundable = { ...order("NO-REFUND"), id: 8, isRefundable: false };
+  const past = { ...order("PAST-PAID"), id: 9, isUpcoming: false, isRefundable: false };
+  const h = await fixture({ initialOrders: [eligible, notRefundable, past, refunded("REFUNDED")] });
+  try {
+    await h.browser.wait("document.querySelectorAll('.my-tickets__refund').length === 2");
+    assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__refund')].map(button=>({disabled:button.disabled,name:button.getAttribute('aria-label'),help:button.getAttribute('aria-describedby')?document.getElementById(button.getAttribute('aria-describedby')).textContent:null}))"), [
+      { disabled: false, name: "Refund order SERVER-OLD-DATE", help: null },
+      { disabled: true, name: "Refund order NO-REFUND", help: "This order is not refundable. Refunds are available until 2 hours before the session." },
+    ]);
+    await h.browser.evaluate("document.querySelector('[role=tab][id$=past]').click()");
+    await h.browser.wait("document.querySelectorAll('.my-tickets__order').length === 2");
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order button').length"), 0);
+    assert.equal(h.calls.refunds, 0);
+  } finally { await h.close(); }
+  for (const malformed of [{ ...order(), isRefundable: undefined }, { ...order(), tickets: [] }]) {
+    const h = await fixture({ initialOrders: [malformed] });
+    try {
+      await h.browser.wait("document.querySelector('.my-tickets__order,.my-tickets__error')");
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__refund:not(:disabled)').length"), 0);
+      assert.equal(h.calls.refunds, 0);
+    } finally { await h.close(); }
+  }
+});
+
+rendered("Slice 5: confirmation identifies server facts, traps focus and cancels through Cancel, X, Escape and backdrop without POST", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h);
+    const content = await h.browser.evaluate("document.querySelector('.refund-dialog').innerText");
+    for (const fact of ["Fixture Film", "REFUND-A", "21:45", "Fixture Venue", "Hall B", "2D", "Georgian", "Seat A1", "Adult", "Total paid: ₾ 19", "cannot be undone"]) assert.ok(content.includes(fact), fact);
+    assert.equal(await h.browser.evaluate("document.activeElement.textContent.trim()"), "Cancel");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    await h.browser.evaluate("document.querySelector('.refund-dialog [type=submit]').focus()"); await key(h, "Tab");
+    assert.equal(await h.browser.evaluate("document.activeElement.getAttribute('aria-label')"), "Close refund dialog");
+    await key(h, "Tab", true);
+    assert.equal(await h.browser.evaluate("document.activeElement.textContent.trim()"), "Confirm refund");
+    for (const method of ["Cancel", "X", "Escape", "backdrop"]) {
+      if (method !== "Cancel") await openRefundUi(h);
+      if (method === "Cancel") await uiButton(h, ".refund-dialog", "Cancel");
+      if (method === "X") await h.browser.evaluate("document.querySelector('[aria-label=\"Close refund dialog\"]').click()");
+      if (method === "Escape") await key(h, "Escape");
+      if (method === "backdrop") await backdrop(h);
+      await h.browser.wait("!document.querySelector('.refund-dialog')");
+      assert.equal(await h.browser.evaluate("document.activeElement.classList.contains('my-tickets__refund')"), true);
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('dialog[open]').length"), 0);
+      assert.equal(h.calls.refunds, 0);
+    }
+    assert.equal(await h.browser.evaluate("location.search"), "?tab=tickets&filter=upcoming&keep=1");
+  } finally { await h.close(); }
+});
+
+for (const dismiss of ["Close", "Escape", "backdrop"]) rendered("Slice 5: duplicate-safe pending UI permits " + dismiss + " while keeping its POST lock through remount", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h, true);
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog .button--primary').disabled"), true);
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog [aria-busy=true]').textContent.includes('does not cancel')"), true);
+    if (dismiss === "Close") await uiButton(h, ".refund-dialog", "Close");
+    if (dismiss === "Escape") await key(h, "Escape");
+    if (dismiss === "backdrop") await backdrop(h);
+    await h.browser.wait("!document.querySelector('.refund-dialog')");
+    assert.equal(await h.browser.evaluate("window.refundQa.busy()"), true);
+    await h.browser.evaluate("window.refundQa.mount(false)"); await h.settle();
+    await h.browser.evaluate("window.refundQa.mount(true)");
+    await h.browser.wait("document.querySelector('.my-tickets__refund:disabled')");
+    assert.match(await h.browser.evaluate("document.querySelector('.my-tickets').innerText"), /Refund request in progress/);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
+    assert.equal(h.calls.refunds, 1);
+    if (dismiss === "Close") {
+      await h.expire();
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].disposition"), "deadline-retired");
+    }
+    await h.finish(null, 401); await h.settle();
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: complete success uses returned facts and counts, keeps Upcoming, and explicitly views Past with surviving focus", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h);
+    const returned = { ...refunded(), session: { ...refunded().session, movie: { title: "Returned refund film" } } };
+    h.setData([returned]); await h.finish(returned);
+    await h.browser.wait("document.querySelector('.refund-dialog').textContent.includes('Refund confirmed.')");
+    assert.match(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent"), /Returned refund film/);
+    assert.equal(await h.browser.evaluate("document.querySelector('[role=tab][aria-selected=true]').textContent.includes('Upcoming')"), true);
+    assert.deepEqual(await h.browser.evaluate("[...document.querySelectorAll('.my-tickets__count')].map(e=>e.textContent)"), ["0", "1"]);
+    await uiButton(h, ".refund-dialog", "View past tickets");
+    await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+    assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__order').textContent"), /Returned refund film/);
+    assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__total').textContent"), /17.25/);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order button').length"), 0);
+    assert.equal(await h.browser.evaluate("document.activeElement.matches('[role=tab][aria-selected=true]')"), true,
+      await h.browser.evaluate("document.activeElement.outerHTML"));
+    assert.match(await h.browser.evaluate("location.search"), /filter=past.*keep=1/);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: keyboard Enter confirms once and repeated Enter cannot dispatch a second pending POST", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await h.browser.evaluate("document.querySelector('.refund-dialog [type=submit]').focus()");
+    await key(h, "Enter"); await key(h, "Enter");
+    await h.waitCalls(() => h.calls.refunds === 1);
+    assert.equal(await h.browser.evaluate("window.refundQa.busy()"), true);
+    await h.finish(); assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: detached success is announced without reopening and its explicit Past action focuses the selected tab", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await uiButton(h, ".refund-dialog", "Close");
+    h.setData([refunded()]); await h.finish();
+    await h.browser.wait("document.querySelector('.my-tickets .refund-feedback [role=status]')?.textContent.includes('Refund confirmed')");
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
+    await uiButton(h, ".my-tickets", "View past tickets");
+    await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+    assert.equal(await h.browser.evaluate("document.activeElement.matches('[role=tab][aria-selected=true]')"), true);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: partial success stays confirmed through detail failure, GET-only Retry and complete card restoration", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); h.setPause(true); await confirmRefundUi(h);
+    await h.waitCalls(() => h.reads.length === 1);
+    await h.finish({ reference: "REFUND-A", status: "refunded" });
+    await h.waitCalls(() => h.reads.length === 2);
+    assert.match(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent"), /Refund confirmed/);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order').length"), 0);
+    await h.read(1, null, 500);
+    await h.browser.wait("document.querySelector('.refund-dialog').textContent.includes('Ticket details could not be loaded')");
+    await uiButton(h, ".refund-dialog", "Retry ticket details");
+    await h.waitCalls(() => h.reads.length === 3); await h.read(2, [refunded()]);
+    await h.browser.wait("window.refundQa.snapshot().records[0].displayStatus === 'ready'");
+    await uiButton(h, ".refund-dialog", "View past tickets");
+    await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), true);
+  } finally { await h.close(); }
+});
+
+for (const alreadyRefunded of [false, true]) rendered("Slice 5: 422 " + (alreadyRefunded ? "already-refunded" : "cutoff") + " message is shown verbatim and only structured GET determines status", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h);
+    const message = alreadyRefunded ? "This order is already refunded (synthetic business message)." : "Refund cutoff reached (synthetic business message).";
+    h.setData([alreadyRefunded ? refunded() : { ...order(), isRefundable: false }]);
+    await h.finish(null, 422, message);
+    await h.browser.wait("document.querySelector('.refund-dialog [role=alert]')");
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog [role=alert]').textContent"), message);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), false);
+    assert.doesNotMatch(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent"), /Refund confirmed/);
+    await checkRefundUi(h, alreadyRefunded ? "succeeded" : "blocked");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), alreadyRefunded);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+for (const failure of ["network", "500", "deadline"]) rendered("Slice 5: " + failure + " uncertainty checks status without POST and requires a visible warning plus NEW explicit consent", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h);
+    if (failure === "network") await h.failRefund();
+    if (failure === "500") await h.finish(null, 500);
+    if (failure === "deadline") await h.expire();
+    await h.browser.wait("window.refundQa.snapshot().records[0].phase === 'uncertain'");
+    const before = await h.browser.evaluate("window.refundQa.snapshot().records[0].requestId");
+    assert.match(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent"), /couldn't confirm whether your refund was completed/);
+    await checkRefundUi(h);
+    assert.equal(h.calls.refunds, 1);
+    await uiButton(h, ".refund-dialog", "Refund again");
+    const warning = "We couldn't confirm the earlier refund. Your tickets currently show this order as paid and refundable, but the earlier request may still complete. Confirming sends a new refund request.";
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog__warning').textContent"), warning);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog__warning').compareDocumentPosition(document.querySelector('.refund-dialog [type=submit]')) & Node.DOCUMENT_POSITION_FOLLOWING"), 4);
+    await uiButton(h, ".refund-dialog", "Cancel");
+    assert.equal(h.calls.refunds, 1);
+    await uiButton(h, ".my-tickets", "Refund again"); await confirmRefundUi(h, true);
+    assert.equal(h.calls.refunds, 2);
+    assert.ok(await h.browser.evaluate("window.refundQa.snapshot().records[0].requestId") > before);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].priorUncertainty"), true);
+    await h.finish();
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: failed verification offers explicit GET-only retry and then reports factual refunded status", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 500);
+    h.setTicketStatus(500); await checkRefundUi(h, "verification_retry");
+    assert.match(await h.browser.evaluate("document.querySelector('.refund-dialog [role=alert]').textContent"), /status could not be checked/);
+    const before = h.calls.tickets; h.setTicketStatus(200); h.setData([refunded()]);
+    await uiButton(h, ".refund-dialog", "Retry verification");
+    await h.waitCalls(() => h.calls.tickets > before);
+    await h.browser.wait("window.refundQa.snapshot().records[0].reportedRefunded");
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent.includes('Refund again')"), false);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: inconclusive or ineligible verification cannot offer a second confirmation", async () => {
+  for (const data of [[], [order(), order()], [{ ...order(), id: 99 }], [{ ...order(), isRefundable: false }], [{ ...order(), isUpcoming: false }]]) {
+    const h = await fixture();
+    try {
+      await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 500);
+      h.setData(data); await checkRefundUi(h, "uncertain");
+      assert.match(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent"), /Another refund cannot proceed/);
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('.refund-dialog [type=submit]').length"), 0);
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+      assert.equal(h.calls.refunds, 1);
+    } finally { await h.close(); }
+  }
+});
+
+rendered("Slice 5: NB-6 renewed pending UI never repeats an older 422 message", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 500);
+    await checkRefundUi(h); await uiButton(h, ".refund-dialog", "Refund again"); await confirmRefundUi(h);
+    await h.finish(null, 422, "OLDER REFUSAL MESSAGE");
+    await h.browser.wait("document.querySelector('.refund-dialog').textContent.includes('OLDER REFUSAL MESSAGE')");
+    await checkRefundUi(h); await uiButton(h, ".refund-dialog", "Refund again"); await confirmRefundUi(h);
+    assert.doesNotMatch(await h.browser.evaluate("document.body.innerText"), /OLDER REFUSAL MESSAGE/);
+    assert.deepEqual(await h.browser.evaluate("(() => { const r=window.refundQa.snapshot().records[0];return [r.reason,r.message,r.displayStatus,r.recoveryPurpose,r.disposition,r.settledGeneration];})()"), [null, null, null, null, null, null]);
+    assert.equal(h.calls.refunds, 3); await h.finish();
+  } finally { await h.close(); }
+});
+
+for (const second401 of [false, true]) rendered("Slice 5: real confirmation uses the existing definite-401 Login and " + (second401 ? "stops after the second POST 401" : "continues exactly once"), async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 401);
+    await h.browser.wait("document.querySelector('.auth-modal--login')");
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
+    assert.equal(h.calls.refunds, 1);
+    await h.modalLogin(); await h.waitCalls(() => h.calls.refunds === 2);
+    if (second401) await h.finish(null, 401);
+    else { h.setData([refunded()]); await h.finish(); }
+    await h.settle();
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal,.refund-dialog'))"), false);
+    assert.equal(h.calls.refunds, 2);
+    assert.equal(h.calls.logouts, 0);
+  } finally { await h.close(); }
+});
+
+for (const second401 of [false, true]) rendered("Slice 5: recovery GET Login is read-only and " + (second401 ? "second GET 401 cannot reopen Login" : "paid facts still need a new warned confirmation"), async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 500);
+    h.setTicketStatus(401); await uiButton(h, ".refund-dialog", "Check refund status");
+    await h.browser.wait("document.querySelector('.auth-modal--login')");
+    if (!second401) h.setTicketStatus(200);
+    await h.modalLogin(); await h.settle();
+    assert.equal(h.calls.refunds, 1);
+    if (second401) {
+      await h.browser.wait("window.refundQa.identity() === null");
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal,.refund-dialog'))"), false);
+      await h.browser.evaluate("window.refundQa.mount(false)"); await h.settle();
+      await h.browser.evaluate("window.refundQa.mount(true)"); await h.settle();
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    } else {
+      await h.browser.wait("window.refundQa.snapshot().records[0].phase === 'retry_available'");
+      await uiButton(h, ".my-tickets", "Refund again");
+      assert.ok(await h.browser.evaluate("document.querySelector('.refund-dialog__warning').getClientRects().length"));
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+      await confirmRefundUi(h); assert.equal(h.calls.refunds, 2); await h.finish();
+    }
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: switching accounts hides origin dialog and feedback and stale 401 cannot expire the new account", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h);
+    h.setData([{ ...order("B-ONLY"), id: 99 }]); await h.login(user(99));
+    await h.browser.wait("document.querySelector('.my-tickets__order')?.textContent.includes('B-ONLY')");
+    assert.doesNotMatch(await h.browser.evaluate("document.body.innerText"), /REFUND-A/);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
+    assert.match(await h.browser.evaluate("document.querySelector('.my-tickets').textContent"), /A refund request is still in progress/);
+    await h.finish(null, 401); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.identity().accountId"), 99);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: subgroup changes preserve confirmation, context departure revokes it, and Profile drafts survive", async () => {
+  const h = await fixture();
+  try {
+    await h.browser.evaluate("window.refundQa.navigate('/profile')");
+    await h.browser.wait("document.querySelector('[name=fullName]')");
+    await h.browser.evaluate("(() => {const input=document.querySelector('[name=fullName]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Unsaved refund draft');input.dispatchEvent(new Event('input',{bubbles:true}));})()");
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=upcoming&keep=1')");
+    await openRefundUi(h);
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=past&keep=1')"); await h.settle();
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog [type=submit]').disabled"), false);
+    await uiButton(h, ".refund-dialog", "Cancel");
+    await h.browser.wait("!document.querySelector('.refund-dialog')");
+    assert.equal(await h.browser.evaluate("document.activeElement.matches('[role=tab][aria-selected=true]')"), true);
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=upcoming&keep=1')");
+    await openRefundUi(h); await confirmRefundUi(h);
+    await h.browser.evaluate("window.refundQa.navigate('/profile')"); await h.settle();
+    assert.equal(await h.browser.evaluate("document.querySelector('[name=fullName]').value"), "Unsaved refund draft");
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
+    await h.finish(null, 401); await h.settle();
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: authentication cancellation and subsequent explicit login cannot revive old confirmation", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 401);
+    await h.browser.wait("document.querySelector('.auth-modal--login')");
+    await h.browser.evaluate("document.querySelector('[aria-label=\"Close authentication dialog\"]').click()");
+    await h.browser.wait("!document.querySelector('.auth-modal')");
+    await h.login(); await h.browser.wait("document.querySelector('.my-tickets__order')");
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: definite-401 verification failure exposes GET-only Retry tickets before the single allowed continuation", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 401);
+    await h.browser.wait("document.querySelector('.auth-modal--login')");
+    h.setTicketStatus(500); await h.modalLogin();
+    await h.browser.wait("window.refundQa.snapshot().records[0]?.phase === 'verification_retry'");
+    await h.browser.wait("document.querySelector('.my-tickets__error button')");
+    assert.equal(h.calls.refunds, 1);
+    const before = h.calls.tickets;
+    h.setTicketStatus(200); h.setPause(true);
+    await uiButton(h, ".my-tickets__error", "Retry tickets");
+    await h.waitCalls(() => h.calls.tickets > before && h.reads.length === 1);
+    assert.equal(h.calls.refunds, 1);
+    await h.browser.wait("document.querySelector('.my-tickets__panel[aria-busy=true]')");
+    await h.read(0, [order()]); await h.waitCalls(() => h.calls.refunds === 2);
+    await h.finish(); assert.equal(h.calls.refunds, 2);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: Tickets remount discards paid retry authority but preserves uncertainty and permits explicit fresh verification", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 500);
+    await checkRefundUi(h); await uiButton(h, ".refund-dialog", "Close");
+    await h.browser.evaluate("window.refundQa.mount(false)"); await h.settle();
+    await h.browser.evaluate("window.refundQa.mount(true)");
+    await h.browser.wait("document.querySelector('.my-tickets__order')");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].priorUncertainty"), true);
+    assert.equal(await h.browser.evaluate("document.querySelector('.my-tickets__refund').disabled"), true);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    assert.equal(h.calls.refunds, 1);
+    await checkRefundUi(h, "retry_available", ".my-tickets");
+    await uiButton(h, ".my-tickets", "Refund again");
+    await h.browser.wait("document.querySelector('.refund-dialog__warning')");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 5: app reload obtains fresh Tickets without restoring dialog or dispatching Refund", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h); await h.finish(null, 500);
+    const before = h.calls.tickets;
+    await h.browser.send("Page.reload");
+    await h.waitCalls(() => h.calls.tickets > before);
+    await h.browser.wait("window.refundQa?.snapshot().records.length === 0 && document.querySelector('.my-tickets__order')");
+    assert.ok(h.calls.tickets > before);
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records.length"), 0);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog'))"), false);
+  } finally { await h.close(); }
+});
+
+for (const width of [1728, 1280, 768, 390]) rendered("Slice 5: verified Refund control and conservative dialog fit " + width + "px with long content and keyboard reachability", async () => {
+  const long = { ...order("REFERENCE".repeat(24)), session: { ...order().session, movie: { title: "LongMovieTitle".repeat(20), posterUrl: null } } };
+  const h = await fixture({ initialOrders: [long] });
+  try {
+    await h.browser.send("Emulation.setDeviceMetricsOverride", { width, height: 1027, deviceScaleFactor: 1, mobile: false });
+    await h.browser.wait("document.querySelector('.my-tickets__refund')");
+    const style = await h.browser.evaluate("(() => {const b=document.querySelector('.my-tickets__refund'),s=getComputedStyle(b);return {background:s.backgroundColor,padding:s.padding,radius:s.borderRadius,size:s.fontSize,weight:s.fontWeight,width:b.getBoundingClientRect().width,parent:b.parentElement.getBoundingClientRect().width,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};})()");
+    assert.equal(style.background, "rgba(255, 255, 255, 0.1)"); assert.equal(style.padding, "10px 22px");
+    assert.equal(style.radius, "999px"); assert.equal(style.size, "14px"); assert.equal(style.weight, "800");
+    assert.ok(Math.abs(style.width - style.parent) < .02); assert.equal(style.overflow, false);
+    await h.capture("refund-control-" + width); await openRefundUi(h);
+    const layout = await h.browser.evaluate("(() => {const d=document.querySelector('.refund-dialog'),r=d.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,overflow:d.scrollWidth>d.clientWidth,clipped:[...d.querySelectorAll('p,h3,li,button')].filter(e=>e.scrollWidth>e.clientWidth+1).map(e=>e.tagName)};})()");
+    assert.ok(layout.left >= 0 && layout.right <= layout.width && layout.top >= 0 && layout.bottom <= layout.height);
+    assert.equal(layout.overflow, false); assert.deepEqual(layout.clipped, []);
+    await h.browser.evaluate("document.querySelector('.refund-dialog [type=submit]').focus()");
+    await key(h, "Tab"); assert.equal(await h.browser.evaluate("Boolean(document.activeElement.closest('.refund-dialog'))"), true);
+    await h.capture("refund-dialog-" + width);
+    assert.equal(h.calls.refunds, 0);
+    assert.doesNotMatch(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent"), /refundable until|30.seconds|countdown/i);
+    await confirmRefundUi(h); await h.finish(null, 500); await checkRefundUi(h);
+    await uiButton(h, ".refund-dialog", "Refund again");
+    await h.browser.evaluate("document.querySelector('.refund-dialog__warning').scrollIntoView({block:'center'})");
+    const warningLayout = await h.browser.evaluate("(() => {const d=document.querySelector('.refund-dialog'),w=d.querySelector('.refund-dialog__warning');return {overflow:d.scrollWidth>d.clientWidth,clipped:w.scrollWidth>w.clientWidth+1,pageOverflow:document.documentElement.scrollWidth>document.documentElement.clientWidth,visible:w.getBoundingClientRect().bottom>0&&w.getBoundingClientRect().top<innerHeight};})()");
+    assert.deepEqual(warningLayout, { overflow: false, clipped: false, pageOverflow: false, visible: true });
+    await h.capture("refund-warning-" + width);
+    await h.browser.evaluate("document.querySelector('.refund-dialog [type=submit]').focus()");
+    assert.equal(await h.browser.evaluate("(() => {const r=document.activeElement.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;})()"), true);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    assert.equal(h.calls.refunds, 1);
+    if (width === 390) {
+      await confirmRefundUi(h); await h.finish(null, 422, "LongServerBusinessMessage".repeat(30));
+      await h.browser.wait("document.querySelector('.refund-dialog [role=alert]')");
+      assert.equal(await h.browser.evaluate("(() => {const e=document.querySelector('.refund-dialog [role=alert]');return e.scrollWidth>e.clientWidth+1;})()"), false);
+      await h.capture("refund-refusal-390");
+    }
   } finally { await h.close(); }
 });

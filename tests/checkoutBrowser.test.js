@@ -888,11 +888,12 @@ for (const width of [1728, 1280, 768, 390]) {
       if (width > 1000) assert.ok(Math.abs(layout.card.width - (layout.availableWidth - 102)) < .02);
       console.log("Stage B geometry", JSON.stringify({ width, availableWidth: layout.availableWidth, card: layout.card, poster: layout.poster, stub: layout.stub }));
       for (const value of ["Server Film", "16+", "143 min", "21:45", "Returned Venue", "Returned Hall", "Returned Format", "Returned Language", "Z9", "Returned Student", "Z2", "Returned Child", "SYNTHETIC-ORDER", "₾ 87.65", "Paid"]) assert.ok(layout.text.includes(value), value);
-      assert.equal(layout.refundButtons, false);
+      assert.equal(layout.refundButtons, true);
       await h.capture("stage-b-upcoming-" + width);
       await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').click()");
       await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
       assert.equal(await h.browser.evaluate("document.querySelector('.my-tickets__status--refunded').textContent"), "Refunded");
+      assert.equal(await h.browser.evaluate("document.querySelectorAll('.my-tickets__order button').length"), 0);
       assert.equal(await h.browser.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth && document.querySelector('.my-tickets__order').scrollWidth <= document.querySelector('.my-tickets__order').clientWidth"), true);
       await h.capture("stage-b-past-" + width);
       if (width === 390) {
