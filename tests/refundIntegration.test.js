@@ -32,8 +32,8 @@ after(async () => { await server?.close(); });
 
 async function fixture({ guest = false, stale = false, pauseTickets = false, pauseMe = false, ignoreTicketAbort = false, initialOrders = [order()] } = {}) {
   const browser = await connectProfileBrowser(endpoint);
-  const calls = { refunds: 0, tickets: 0, me: 0, logouts: 0, deletes: 0, forbidden: [], exceptions: [] };
-  let freshUser = user(), data = initialOrders, refundRequest, meRequest, loginRequest;
+  const calls = { refunds: 0, tickets: 0, me: 0, logouts: 0, deletes: 0, profileSaves: 0, refundPaths: [], forbidden: [], exceptions: [] };
+  let freshUser = user(), data = initialOrders, refundRequest, meRequest, loginRequest, profileRequest;
   let loginStatus = 200, pauseLogin = false;
   let ticketStatus = 200;
   const chronology = [], ticketCredentials = [], refundCredentials = [];
@@ -58,10 +58,11 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
       reads.length = 0;
       refundRequest = null;
       meRequest = null;
+      profileRequest = null;
     }
   };
   const headers = [{ name: "Content-Type", value: "application/json" }, { name: "Access-Control-Allow-Origin", value: "*" },
-    { name: "Access-Control-Allow-Headers", value: "Content-Type,Authorization" }, { name: "Access-Control-Allow-Methods", value: "GET,POST,DELETE,OPTIONS" }];
+    { name: "Access-Control-Allow-Headers", value: "Content-Type,Authorization" }, { name: "Access-Control-Allow-Methods", value: "GET,POST,PUT,DELETE,OPTIONS" }];
   const fulfill = (event, body, status = 200) => interception("Fetch.fulfillRequest", { requestId: event.requestId,
     responseCode: status, responseHeaders: headers, body: status === 204 ? "" : Buffer.from(JSON.stringify(body)).toString("base64") });
   browser.on("Runtime.exceptionThrown", event => calls.exceptions.push(event.exceptionDetails.exception?.description ?? event.exceptionDetails.text));
@@ -85,6 +86,9 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
         return fulfill(event, { data: { user: freshUser, token: "synthetic-session-" + freshUser.id } }, url.pathname.endsWith("register") ? 201 : 200);
       }
       if (method === "POST" && url.pathname === "/api/logout") { calls.logouts++; return fulfill(event, null, 204); }
+      if (method === "PUT" && url.pathname === "/api/profile") {
+        calls.profileSaves++; profileRequest = event; return;
+      }
       if (method === "GET" && url.pathname === "/api/tickets") {
         assert.equal(url.search, "");
         calls.tickets++; chronology.push("tickets");
@@ -94,6 +98,7 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
       }
       if (method === "POST" && /^[/]api[/]orders[/][^/]+[/]refund$/.test(url.pathname)) {
         calls.refunds++; chronology.push("refund"); refundCredentials.push(new Headers(event.request.headers).get("Authorization"));
+        calls.refundPaths.push(url.pathname);
         refundRequest = event; return;
       }
       if (method === "GET" && url.pathname === "/api/sessions/10") return fulfill(event, { data: { ...order().session, price: 19 } });
@@ -163,6 +168,10 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
     async resolveLogin(value = freshUser, status = 200) {
       await waitCalls(() => Boolean(loginRequest)); pauseLogin = false;
       await fulfill(loginRequest, status === 200 ? { data: { user: value, token: "synthetic-new-login" } } : { message: "Invalid synthetic credentials" }, status);
+    },
+    async saveProfile(value) {
+      await waitCalls(() => Boolean(profileRequest)); freshUser = value;
+      await fulfill(profileRequest, { data: value });
     },
     async failRefund() {
       assert.ok(refundRequest);
@@ -1415,6 +1424,87 @@ rendered("Slice 5: Tickets remount discards paid retry authority but preserves u
     await uiButton(h, ".my-tickets", "Refund again");
     await h.browser.wait("document.querySelector('.refund-dialog__warning')");
     assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+async function refreshDuringConfirmation(h) {
+  await h.browser.evaluate("window.refundQa.navigate('/profile')");
+  await h.browser.wait("document.querySelector('.profile-form [name=fullName]')");
+  await h.browser.evaluate("(() => {const input=document.querySelector('.profile-form [name=fullName]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Saved During Confirmation');input.dispatchEvent(new Event('input',{bubbles:true}));})()");
+  await h.browser.wait("!document.querySelector('.profile-form__save').disabled");
+  await h.browser.evaluate("document.querySelector('.profile-form__save').click()");
+  await h.waitCalls(() => h.calls.profileSaves === 1);
+  await h.browser.evaluate("document.querySelector('.profile-page__navigation a[href=\"/profile?tab=tickets\"]').click()");
+  await openRefundUi(h);
+  const identity = await h.browser.evaluate("window.refundQa.identity()");
+  h.setPause(true);
+  await h.saveProfile({ ...user(), fullName: "Saved During Confirmation" });
+  await h.waitCalls(() => h.reads.length === 1);
+  assert.deepEqual(await h.browser.evaluate("window.refundQa.identity()"), identity, "profile save keeps the same account/session");
+}
+
+for (const scenario of [
+  { name: "nonrefundable", orders: [{ ...order(), isRefundable: false }] },
+  { name: "Past", orders: [{ ...order(), isUpcoming: false, isRefundable: false }] },
+  { name: "refunded", orders: [refunded()] },
+  { name: "missing", orders: [] },
+  { name: "mismatched identity", orders: [{ ...order(), session: { ...order().session, id: 99 } }] },
+  { name: "failed GET", orders: null, status: 500 },
+]) rendered("Slice 6 NB-8: a late real Profile save and fresh " + scenario.name + " Tickets cannot authorize the already-open confirmation", async () => {
+  const h = await fixture();
+  try {
+    await refreshDuringConfirmation(h);
+    await h.read(0, scenario.orders, scenario.status ?? 200);
+    await h.browser.wait("document.querySelector('.my-tickets__panel[aria-busy=false]')");
+    const dispatched = await h.browser.evaluate("document.querySelector('.refund-dialog form').requestSubmit();window.refundQa.busy()");
+    if (dispatched) await h.waitCalls(() => h.calls.refunds === 1);
+    assert.equal(h.calls.refunds, 0, "current unavailable/ineligible facts must block the older dialog's POST");
+    assert.equal(dispatched, false);
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog [type=submit]').disabled"), true);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+  } finally { await h.close(); }
+});
+
+rendered("Slice 6 NB-8: a pending fresh Tickets read blocks confirmation; current eligible facts update the dialog and permit one explicit POST", async () => {
+  const h = await fixture();
+  try {
+    await refreshDuringConfirmation(h);
+    await h.browser.wait("document.querySelector('.my-tickets__panel[aria-busy=true]')");
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog [type=submit]').disabled"), true);
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog form').requestSubmit();window.refundQa.busy()"), false);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    const latest = { ...order(), totalPrice: 29, session: { ...order().session,
+      movie: { ...order().session.movie, title: "Fresh Eligible Film" } } };
+    await h.read(0, [latest]);
+    await h.browser.wait("!document.querySelector('.refund-dialog [type=submit]').disabled");
+    assert.match(await h.browser.evaluate("document.querySelector('.refund-dialog').textContent"), /Fresh Eligible Film/);
+    assert.match(await h.browser.evaluate("document.querySelector('.refund-dialog__order').textContent"), /Total paid:.*29$/);
+    assert.equal(h.calls.refunds, 0);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    await confirmRefundUi(h, true);
+    assert.deepEqual(h.calls.refundPaths, ["/api/orders/REFUND-A/refund"]);
+    await h.finish();
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+for (const status of [403, 404]) rendered("Slice 6: " + status + " refusal from real confirmation preserves the server message and requires explicit read-only verification", async () => {
+  const h = await fixture();
+  try {
+    await openRefundUi(h); await confirmRefundUi(h);
+    const message = "Synthetic " + status + " server refusal.";
+    await h.finish(null, status, message);
+    await h.browser.wait("document.querySelector('.refund-dialog [role=alert]')");
+    assert.equal(await h.browser.evaluate("document.querySelector('.refund-dialog [role=alert]').textContent"), message);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), false);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.refunds, 1);
+    await checkRefundUi(h, "idle");
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().confirmation"), null);
+    await uiButton(h, ".refund-dialog", "Confirm a new refund");
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.refund-dialog__warning'))"), false);
     assert.equal(h.calls.refunds, 1);
   } finally { await h.close(); }
 });

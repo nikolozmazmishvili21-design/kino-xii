@@ -189,16 +189,19 @@ export default function MyTickets() {
   const record = ownsSelection ? snapshot.records.find(value => value.identity.reference === selection.order.reference) : null;
   const visible = ownsSelection && (selection.requestId === null || record?.requestId === selection.requestId);
   const confirming = selection?.requestId === null;
+  // A same-session Profile save can refresh Tickets while this dialog is open.
+  // Only the latest successful read may authorize and describe confirmation.
+  const confirmationOrder = selection ? findOrder(selection.details) : null;
   const canConfirm = visible && !selection.invalid && (confirming
-    ? sameRefundConfirmation(selection.details, runtime.confirmationDetails(selection.order))
+    ? sameRefundConfirmation(selection.details, runtime.confirmationDetails(confirmationOrder))
     : Boolean(findOrder(record) && runtime.confirmationDetails(findOrder(record))));
   function confirm() {
     // A stale handler must independently revalidate the dialog's read authority.
-    if (!visible || !confirming || !sameRefundConfirmation(selection.details, runtime.confirmationDetails(selection.order))) return;
-    const consent = runtime.createConsent(selection.order, { confirmed: true,
+    if (!visible || !confirming || !sameRefundConfirmation(selection.details, runtime.confirmationDetails(confirmationOrder))) return;
+    const consent = runtime.createConsent(confirmationOrder, { confirmed: true,
       warningAcknowledged: Boolean(selection.details.warning) });
     if (!consent) { setSelection({ ...selection, invalid: true }); return; }
-    void runtime.submit(consent, selection.order);
+    void runtime.submit(consent, confirmationOrder);
     const submitted = runtime.snapshot().records.find(value => value.identity.reference === selection.order.reference);
     setSelection(submitted?.phase === "submitting" && submitted.consentGeneration === consent.consentGeneration
       ? { ...selection, requestId: submitted.requestId } : { ...selection, invalid: true });
@@ -215,7 +218,8 @@ export default function MyTickets() {
   return <>
     <TicketsContent read={read} identity={read.identity} group={group} onSelectGroup={selectGroup}
       refund={runtime ? { runtime, snapshot, open, findOrder, elementRef, viewPast } : null} />
-    {visible && <RefundDialog order={record?.reportedRefunded && findOrder(record) ? findOrder(record) : selection.order} warning={selection.details.warning} record={record}
+    {visible && <RefundDialog order={confirming ? confirmationOrder ?? selection.order
+      : record?.reportedRefunded && findOrder(record) ? findOrder(record) : selection.order} warning={selection.details.warning} record={record}
       confirming={confirming} canConfirm={canConfirm} busy={snapshot.busy || runtime.isVerifying()}
       onConfirm={confirm} onClose={close} openerRef={openerRef} getFallbackFocus={getFallbackFocus}
       onCheck={() => { void runtime.checkStatus(selection.order.reference); }}
