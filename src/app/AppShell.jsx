@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Outlet, useLocation, useMatch, useNavigate } from "react-router-dom";
-import { ROUTES } from "../routing/routes.js";
+import { ROUTES, profileTab } from "../routing/routes.js";
 import Navbar from "../components/navigation/Navbar.jsx";
 import AuthModal from "../auth/AuthModal.jsx";
 import { useAuth } from "../auth/AuthContext.js";
 import { BookingEntryContext } from "../auth/BookingEntryContext.js";
 import { createBookingAction } from "../auth/pendingAction.js";
 import { ProfileAccessContext } from "../auth/ProfileAccessContext.js";
+import { RefundContext } from "../tickets/RefundContext.js";
+import { createRefundRuntime } from "../tickets/refundRuntime.js";
 import BookingProvider from "../booking/BookingProvider.jsx";
 
 export default function AppShell() {
@@ -14,10 +16,30 @@ export default function AppShell() {
   const isMovieDetail = useMatch(ROUTES.movieDetail);
   const isProfile = useMatch(ROUTES.profile);
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { status, user, mutation, pendingAction, bookingReadyAction, setPendingAction,
     clearProtectedAction, markBookingReady, consumeBookingReady, expireSession,
-    expireProfileSession } = useAuth();
+    expireProfileSession, getRequestAuth, registerAuthLifecycle } = useAuth();
+  const inTickets = pathname === ROUTES.profile && profileTab(search) === "tickets";
+  const ticketsContext = useRef(inTickets);
+  // The factory stores this getter; it reads the ref only during later dispatch.
+  // eslint-disable-next-line react-hooks/refs
+  const [refund] = useState(() => createRefundRuntime({
+    getAuth: getRequestAuth, isContextCurrent: () => ticketsContext.current,
+  }));
+  useLayoutEffect(() => {
+    const departed = ticketsContext.current && !inTickets;
+    ticketsContext.current = inTickets;
+    if (departed) refund.cancelIntent();
+  }, [inTickets, refund]);
+  useLayoutEffect(() => {
+    const unsubscribe = registerAuthLifecycle((type) => {
+      if (type === "logout") refund.logout();
+      refund.syncAuth();
+    });
+    refund.syncAuth();
+    return unsubscribe; // App/consumer cleanup never retires a submitted POST.
+  }, [registerAuthLifecycle, refund]);
   const [authMode, setAuthMode] = useState("closed");
   const [profileContinuation, setProfileContinuation] = useState(null);
   const continuationRef = useRef(null);
@@ -63,12 +85,13 @@ export default function AppShell() {
   const finishAuth = useCallback(() => setAuthMode("closed"), []);
   const cancelAuth = useCallback(() => {
     bookingLifecycle.current?.cancelContinuation();
+    refund.cancelIntent();
     const isProfileAccess = Boolean(continuationRef.current);
     finishProfileAccess();
     clearProtectedAction();
     setAuthMode("closed");
     if (isProfileAccess) navigate(ROUTES.home);
-  }, [clearProtectedAction, finishProfileAccess, navigate]);
+  }, [clearProtectedAction, finishProfileAccess, navigate, refund]);
 
   const openBooking = useCallback((sessionId) => {
     const action = createBookingAction(sessionId);
@@ -118,6 +141,7 @@ export default function AppShell() {
   }), [profileContinuation, requestProfileAccess, reauthenticateProfile, finishProfileAccess]);
 
   return (
+    <RefundContext.Provider value={refund}>
     <BookingEntryContext.Provider value={bookingEntry}>
       <ProfileAccessContext.Provider value={profileAccess}>
         <BookingProvider authClosed={visibleAuthMode === "closed"}>
@@ -137,5 +161,6 @@ export default function AppShell() {
         </BookingProvider>
       </ProfileAccessContext.Provider>
     </BookingEntryContext.Provider>
+    </RefundContext.Provider>
   );
 }

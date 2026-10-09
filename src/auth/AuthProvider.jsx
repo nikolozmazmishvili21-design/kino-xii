@@ -18,6 +18,36 @@ export default function AuthProvider({ children }) {
   const mutation = useRef(null);
   const revision = useRef(0);
   const currentUser = useRef(null);
+  // Session identity is independent of User replacement and React render identity.
+  // Credentials stay behind this private getter, never in context snapshots.
+  const session = useRef(null), sessionGeneration = useRef(0);
+  const authListeners = useRef(new Set());
+  const registerAuthLifecycle = useCallback((handler) => {
+    authListeners.current.add(handler);
+    return () => authListeners.current.delete(handler);
+  }, []);
+  const notifyAuthLifecycle = useCallback((type) => {
+    for (const handler of [...authListeners.current]) {
+      try { handler(type); } catch { /* One observer cannot prevent auth cleanup. */ }
+    }
+  }, []);
+  const invalidateSession = useCallback((type = "changed") => {
+    sessionGeneration.current++;
+    session.current = null;
+    notifyAuthLifecycle(type);
+  }, [notifyAuthLifecycle]);
+  const adoptSession = useCallback((nextUser, token) => {
+    if (session.current?.accountId !== nextUser.id || session.current.token !== token) {
+      sessionGeneration.current++;
+    }
+    session.current = Object.freeze({ accountId: nextUser.id, generation: sessionGeneration.current, token });
+    notifyAuthLifecycle("changed");
+  }, [notifyAuthLifecycle]);
+  const getRequestAuth = useCallback(() => mutation.current ? null : session.current, []);
+  const getSessionIdentity = useCallback(() => {
+    const current = getRequestAuth();
+    return current ? { accountId: current.accountId, generation: current.generation } : null;
+  }, [getRequestAuth]);
   const bookingLogout = useRef(null);
   const registerBookingLogout = useCallback((handler) => {
     bookingLogout.current = handler;
@@ -96,11 +126,12 @@ export default function AuthProvider({ children }) {
     revision.current += 1;
     restoration.current = null;
     currentUser.current = null;
+    invalidateSession();
     clearToken();
     setAuthState({ ...INITIAL_STATE, status: "guest" });
     updateActions({ pendingAction: descriptor, bookingReadyAction: null });
     return true;
-  }, [updateActions]);
+  }, [updateActions, invalidateSession]);
 
   const isCurrentUser = useCallback((expectedUser) => {
     return Boolean(expectedUser && currentUser.current === expectedUser && !mutation.current);
@@ -113,6 +144,7 @@ export default function AuthProvider({ children }) {
     revision.current += 1;
     restoration.current = null;
     currentUser.current = null;
+    invalidateSession();
     clearToken();
     setAuthState({ ...INITIAL_STATE, status: "guest" });
     const actions = protectedActions.current;
@@ -121,7 +153,7 @@ export default function AuthProvider({ children }) {
       bookingReadyAction: null,
     });
     return true;
-  }, [isCurrentUser, updateActions]);
+  }, [isCurrentUser, updateActions, invalidateSession]);
 
   const restoreSession = useCallback(() => {
     if (mutation.current) {
@@ -146,6 +178,7 @@ export default function AuthProvider({ children }) {
         if (!token) {
           if (revision.current === requestRevision) {
             currentUser.current = null;
+            invalidateSession();
             setAuthState({ ...INITIAL_STATE, status: "guest" });
           }
 
@@ -166,6 +199,7 @@ export default function AuthProvider({ children }) {
         }
 
         currentUser.current = response.data;
+        adoptSession(response.data, token);
         setAuthState({
           ...INITIAL_STATE,
           status: "authenticated",
@@ -181,6 +215,7 @@ export default function AuthProvider({ children }) {
 
         if (error.status === 401) {
           currentUser.current = null;
+          invalidateSession();
           clearToken();
           setAuthState({ ...INITIAL_STATE, status: "guest" });
         } else {
@@ -200,7 +235,7 @@ export default function AuthProvider({ children }) {
 
     restoration.current = { promise, revision: requestRevision };
     return promise;
-  }, []);
+  }, [adoptSession, invalidateSession]);
 
   const runMutation = useCallback((type, fields) => {
     if (mutation.current) {
@@ -220,6 +255,7 @@ export default function AuthProvider({ children }) {
       currentUser.current = null;
       clearProtectedAction();
     }
+    invalidateSession(type === "logout" ? "logout" : "changed");
     revision.current += 1;
     restoration.current = null;
     setAuthState((current) => ({
@@ -245,6 +281,7 @@ export default function AuthProvider({ children }) {
 
         setToken(token);
         currentUser.current = user;
+        adoptSession(user, token);
         setAuthState((current) => ({
           ...current,
           status: "authenticated",
@@ -265,6 +302,11 @@ export default function AuthProvider({ children }) {
         }
 
         mutation.current = null;
+        // A failed login from an existing session must not strand protected reads.
+        if (type !== "logout" && !session.current && currentUser.current && getToken()) {
+          adoptSession(currentUser.current, getToken());
+        }
+        notifyAuthLifecycle("changed");
         setAuthState((current) => ({
           ...current,
           ...(type === "logout"
@@ -276,7 +318,7 @@ export default function AuthProvider({ children }) {
 
     mutation.current = { type, promise };
     return promise;
-  }, [clearProtectedAction]);
+  }, [clearProtectedAction, invalidateSession, adoptSession, notifyAuthLifecycle]);
 
   const login = useCallback(
     (fields) => runMutation("login", fields),
@@ -307,10 +349,13 @@ export default function AuthProvider({ children }) {
       isCurrentUser,
       getCurrentUser,
       registerBookingLogout,
+      registerAuthLifecycle,
+      getRequestAuth,
+      getSessionIdentity,
     }),
     [authState, actionState, login, register, logout, restoreSession,
       setPendingAction, clearProtectedAction, markBookingReady, consumeBookingReady,
-      replaceUser, expireSession, expireProfileSession, isCurrentUser, getCurrentUser, registerBookingLogout],
+      replaceUser, expireSession, expireProfileSession, isCurrentUser, getCurrentUser, registerBookingLogout, registerAuthLifecycle, getRequestAuth, getSessionIdentity],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -749,8 +749,10 @@ rendered("Stage A URL history/reload, invalid fallback, keyboard selection and P
     assert.equal(h.calls.tickets, 1);
     await h.browser.evaluate("document.querySelector('.my-tickets [id$=\"-tab-past\"]').focus()"); await key("End"); await key("Enter");
     await h.browser.wait("new URLSearchParams(location.search).get('filter') === 'past'");
+    // Reload can acknowledge before the old document disappears.
+    await h.browser.evaluate("window.stageATicketsReloadPending = true");
     await h.browser.send("Page.reload", { ignoreCache: true });
-    await h.browser.wait("document.querySelector('.my-tickets__order') && document.querySelector('.my-tickets [id$=\"-tab-past\"]').getAttribute('aria-selected') === 'true'");
+    await h.browser.wait("!window.stageATicketsReloadPending && document.querySelector('.my-tickets__order') && document.querySelector('.my-tickets [id$=\"-tab-past\"]').getAttribute('aria-selected') === 'true'");
     assert.match(await h.browser.evaluate("document.querySelector('.my-tickets__panel').textContent"), /SYNTHETIC-REFUNDED/);
     assert.equal(h.calls.tickets, 2);
     await h.browser.send("Page.navigate", { url: origin + "profile?tab=tickets&filter=invalid&keep=1" });

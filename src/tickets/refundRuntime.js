@@ -21,8 +21,8 @@ export function createRefundRuntime({
 } = {}) {
   if (typeof getAuth !== "function") throw new TypeError("Refund runtime requires current auth ownership.");
   let pending = null, consent = null, consentAuth = null, consentGeneration = 0;
-  let requestGeneration = 0, notifying = false, observedAuth = null, revokedAuth = null, cache = null;
-  const accounts = new Map(), listeners = new Set();
+  let requestGeneration = 0, notifying = false, dirty = false, queued = false, observedAuth = null, revokedAuth = null, cache = null;
+  const accounts = new Map(), listeners = new Set(), outcomeListeners = new Set();
   function auth() {
     const value = getAuth();
     if (value && revokedAuth?.accountId === value.accountId && revokedAuth.generation === value.generation) return null;
@@ -44,13 +44,23 @@ export function createRefundRuntime({
   }
   function notify() {
     cache = null;
+    dirty = true;
     if (notifying) return;
     notifying = true;
     try {
-      for (const listener of [...listeners]) {
-        try { listener(); } catch (error) { report(error); }
+      // A later listener can change state after an earlier listener sampled it.
+      // Coalesce a second synchronous pass without recursive stack growth.
+      for (let pass = 0; dirty && pass < 2; pass++) {
+        dirty = false;
+        for (const listener of [...listeners]) {
+          try { listener(); } catch (error) { report(error); }
+        }
       }
     } finally { notifying = false; }
+    if (dirty && !queued) {
+      queued = true;
+      queueMicrotask(() => { queued = false; if (dirty) notify(); });
+    }
   }
   function snapshot() {
     const current = auth();
@@ -87,6 +97,9 @@ export function createRefundRuntime({
     }
   }
   function cancelIntent() {
+    const retained = [...accounts.values()].some((state) =>
+      [...state.records.values()].some((record) => record.continuation));
+    if (!consent && !pending?.allowContinuation && !retained) return;
     consent = null;
     consentAuth = null;
     consentGeneration++;
@@ -101,6 +114,7 @@ export function createRefundRuntime({
   }
   function syncAuth() {
     const current = auth();
+    if ((!observedAuth && !current) || (observedAuth && sameAuth(observedAuth))) return;
     if (observedAuth && !sameAuth(observedAuth)) {
       consent = null;
       consentAuth = null;
@@ -146,10 +160,12 @@ export function createRefundRuntime({
         replayCount: 0, purpose: "definite-401" }) : null;
     const phase = outcome.kind === "unauthenticated" ? (continuation ? "reauth" : "blocked") : outcome.kind;
     const record = Object.freeze({ identity: request.identity, accountId: request.accountId,
-      requestId: request.id, consentGeneration: request.consentGeneration, phase, disposition,
+      requestId: request.id, authGeneration: request.auth.generation,
+      consentGeneration: request.consentGeneration, phase, disposition,
       settledGeneration: ++state.generation, priorUncertainty: Boolean(previous?.priorUncertainty || phase === "uncertain"),
       reportedRefunded: Boolean(previous?.reportedRefunded || outcome.reportedRefunded),
-      displayStatus: outcome.displayStatus ?? null, reason: outcome.reason ?? null,
+      displayStatus: outcome.displayStatus ?? null,
+      reason: outcome.kind === "unauthenticated" ? "unauthenticated" : outcome.reason ?? null,
       message: outcome.message ?? null, continuation });
     state.records.set(request.identity.reference, record);
   }
@@ -169,6 +185,19 @@ export function createRefundRuntime({
     }
     if (pending === request) pending = null;
     request.resolve(Object.freeze({ kind: currentOwner ? outcome.kind : "stale", requestId: request.id }));
+    // Full Orders are delivered only to attached readers; never cached in the
+    // runtime snapshot/ledger or replayed on subscription/remount.
+    if (currentOwner && outcome.kind === "succeeded" && outcome.order) {
+      const event = Object.freeze({ guard: readGuard(), identity: request.identity,
+        requestId: request.id, order: outcome.order });
+      notifying = true;
+      try {
+        for (const listener of [...outcomeListeners]) {
+          if (!sameAuth(request.auth) || !isReadCurrent(event.guard)) break;
+          try { listener(event); } catch (error) { report(error); }
+        }
+      } finally { notifying = false; }
+    }
     notify();
   }
   function checkDeadline() {
@@ -252,6 +281,10 @@ export function createRefundRuntime({
     createConsent, submit, snapshot, readGuard, isReadCurrent, syncAuth,
     cancelIntent, logout, checkDeadline,
     hasActivePost: () => Boolean(pending),
+    subscribeOutcome(listener) {
+      outcomeListeners.add(listener);
+      return () => outcomeListeners.delete(listener);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener); // Unsubscribe never owns a timer/lock.

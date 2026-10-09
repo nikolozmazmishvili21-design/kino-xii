@@ -484,3 +484,56 @@ test("default deadline clock uses performance.now rather than Date.now", async (
   time += REFUND_WAIT_MS; callback();
   assert.equal((await result).kind, "uncertain");
 });
+
+test("earlier subscribers observe listener-triggered cancellation in a coalesced follow-up", () => {
+  const h = harness(), seen = [];
+  h.runtime.subscribe(() => { seen.push(h.runtime.snapshot().phase); });
+  let calls = 0;
+  h.runtime.subscribe(() => { calls++; h.runtime.cancelIntent(); });
+  assert.equal(h.authorize(), null);
+  assert.deepEqual(seen, ["confirming", "idle"]);
+  assert.equal(calls, 2); // Idempotent cancel does not create recursive notification loops.
+  assert.equal(h.runtime.snapshot().confirmation, null);
+  assert.equal(h.requests.length, 0);
+});
+
+test("nested cancellation notification cannot revive consent or send reentrant POST", async () => {
+  const h = harness(), consent = h.authorize(), phases = [], repeats = [];
+  h.runtime.subscribe(() => { phases.push(h.runtime.snapshot().confirmation); });
+  h.runtime.subscribe(() => { h.runtime.cancelIntent(); repeats.push(h.runtime.submit(consent, order())); });
+  h.runtime.cancelIntent();
+  assert.ok(phases.every((value) => value === null));
+  for (const repeat of repeats) assert.equal((await repeat).kind, "blocked");
+  assert.equal(h.requests.length, 0);
+});
+
+test("complete outcome delivery is transient, guarded and contains no credentials", async () => {
+  const h = harness(() => success()), events = [], attempts = [];
+  h.runtime.subscribeOutcome((event) => {
+    events.push(event);
+    attempts.push(h.start); // No effect from merely receiving a result.
+    assert.equal(h.runtime.isReadCurrent(event.guard), true);
+    assert.equal(h.authorize(order("REENTRANT")), null);
+    assert.doesNotMatch(JSON.stringify(event), /token|synthetic-auth/);
+  });
+  assert.equal((await h.start()).kind, "succeeded");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].order.status, "refunded");
+  assert.equal(h.runtime.snapshot().records[0].reportedRefunded, true);
+  privateSafe(h);
+  h.runtime.subscribeOutcome(() => { throw new Error("Subscription must not replay an Order"); });
+  assert.equal(events.length, 1);
+});
+
+test("partial, obsolete-auth and deadline-retired outcomes never deliver complete Orders", async () => {
+  for (const mode of ["partial", "account", "deadline"]) {
+    const done = deferred(), h = harness(() => done.promise), events = [];
+    h.runtime.subscribeOutcome((event) => events.push(event));
+    const result = h.start();
+    if (mode === "account") h.switch(99);
+    if (mode === "deadline") { h.setTime(REFUND_WAIT_MS); h.runtime.checkDeadline(); }
+    done.resolve(success("SYNTHETIC-R", mode === "partial"));
+    await result; await flush();
+    assert.deepEqual(events, []);
+  }
+});
