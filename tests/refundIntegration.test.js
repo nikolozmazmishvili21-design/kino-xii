@@ -32,7 +32,9 @@ after(async () => { await server?.close(); });
 async function fixture({ guest = false, stale = false, pauseTickets = false, pauseMe = false, ignoreTicketAbort = false } = {}) {
   const browser = await connectProfileBrowser(endpoint);
   const calls = { refunds: 0, tickets: 0, me: 0, logouts: 0, deletes: 0, forbidden: [], exceptions: [] };
-  let freshUser = user(), data = [order()], refundRequest, meRequest;
+  let freshUser = user(), data = [order()], refundRequest, meRequest, loginRequest;
+  let loginStatus = 200, pauseLogin = false;
+  const chronology = [], ticketCredentials = [], refundCredentials = [];
   const reads = [], handlerErrors = [], pendingHandlers = new Set();
   let closing = false;
   // Chrome removes interceptions when the application aborts a request.
@@ -74,18 +76,23 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
         return fulfill(event, stale ? { message: "Unauthenticated" } : { data: freshUser }, stale ? 401 : 200);
       }
       if (method === "POST" && ["/api/login", "/api/register"].includes(url.pathname)) {
+        chronology.push("login");
+        if (pauseLogin) { loginRequest = event; return; }
+        if (loginStatus !== 200) return fulfill(event, { message: "Invalid synthetic credentials" }, loginStatus);
         stale = false;
         return fulfill(event, { data: { user: freshUser, token: "synthetic-session-" + freshUser.id } }, url.pathname.endsWith("register") ? 201 : 200);
       }
       if (method === "POST" && url.pathname === "/api/logout") { calls.logouts++; return fulfill(event, null, 204); }
       if (method === "GET" && url.pathname === "/api/tickets") {
         assert.equal(url.search, "");
-        calls.tickets++;
+        calls.tickets++; chronology.push("tickets");
+        ticketCredentials.push(new Headers(event.request.headers).get("Authorization"));
         if (pauseTickets) { reads.push(event); return; }
         return fulfill(event, { data });
       }
       if (method === "POST" && /^[/]api[/]orders[/][^/]+[/]refund$/.test(url.pathname)) {
-        calls.refunds++; refundRequest = event; return;
+        calls.refunds++; chronology.push("refund"); refundCredentials.push(new Headers(event.request.headers).get("Authorization"));
+        refundRequest = event; return;
       }
       if (method === "GET" && url.pathname === "/api/sessions/10") return fulfill(event, { data: { ...order().session, price: 19 } });
       if (method === "GET" && url.pathname === "/api/sessions/10/seats") return fulfill(event, { data: {
@@ -128,7 +135,9 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
     while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     assert.ok(predicate(), "Expected intercepted request");
   };
-  return { browser, calls, reads,
+  return { browser, calls, reads, chronology, ticketCredentials, refundCredentials,
+    waitCalls, setLoginStatus(value) { loginStatus = value; },
+    setPauseLogin(value) { pauseLogin = value; },
     async start(value = order()) {
       const accepted = await browser.evaluate("window.refundQa.start(" + JSON.stringify(value) + ")");
       assert.equal(accepted, true); await waitCalls(() => Boolean(refundRequest));
@@ -139,6 +148,21 @@ async function fixture({ guest = false, stale = false, pauseTickets = false, pau
       freshUser = value;
       await browser.evaluate("window.refundQa.login({email:'fixture@example.test',password:'fixture-password'})");
       await browser.wait("window.refundQa.identity()?.accountId === " + value.id);
+    },
+    async modalLogin(value = user()) {
+      freshUser = value;
+      await browser.wait("document.querySelector('.auth-modal--login form')");
+      await browser.evaluate("(() => { const form=document.querySelector('.auth-modal form'); for(const [name,value] of Object.entries({email:'fixture@example.test',password:'fixture-password'})) { const input=form.elements.namedItem(name); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); } })()");
+      await browser.evaluate("document.querySelector('.auth-modal form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))");
+    },
+    async resolveLogin(value = freshUser, status = 200) {
+      await waitCalls(() => Boolean(loginRequest)); pauseLogin = false;
+      await fulfill(loginRequest, status === 200 ? { data: { user: value, token: "synthetic-new-login" } } : { message: "Invalid synthetic credentials" }, status);
+    },
+    async failRefund() {
+      assert.ok(refundRequest);
+      await interception("Fetch.failRequest", { requestId: refundRequest.requestId, errorReason: "Failed" });
+      await browser.wait("!window.refundQa.busy()");
     },
     async finish(body = refunded(), status = 200) {
       assert.ok(refundRequest);
@@ -314,20 +338,22 @@ rendered("semantic Tickets departure revokes consent but subgroup navigation and
   } finally { await h.close(); }
 });
 
-rendered("current definite Refund 401 stays recorded without Login or automatic replay", async () => {
+rendered("current definite Refund 401 opens Login and preserves intent without a premature replay", async () => {
   const h = await fixture();
   try {
     await h.browser.wait("document.querySelector('.my-tickets__order')");
-    await h.start(); await h.settle();
-    const before = h.calls.tickets;
+    await h.start(); await h.settle(); const before = h.calls.tickets;
     await h.finish(null, 401); await h.settle();
-    assert.equal(h.calls.tickets, before); // No indirect Login through automatic Tickets GET.
-    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.my-tickets__error'))"), true);
-    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].phase"), "reauth");
-    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation.replayCount"), 0);
-    assert.equal(await h.browser.evaluate("window.refundQa.identity().accountId"), 12);
-    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.tickets, before);
+    assert.equal(await h.browser.evaluate("window.refundQa.identity()"), null);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records.length"), 0);
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.auth-modal--login').length"), 1);
+    assert.equal(await h.browser.evaluate("localStorage.getItem('kino-xii.auth.token')"), null);
+    assert.equal(h.calls.logouts, 0); assert.equal(h.calls.refunds, 1);
+    // Direct auth state observation is insufficient to authorize continuation.
+    await h.login(); await h.settle();
     assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation.replayCount"), 0);
   } finally { await h.close(); }
 });
 
@@ -405,4 +431,365 @@ rendered("malformed success and HTTP 500 preserve uncertainty while fresh GET su
       assert.equal(h.calls.refunds, 1);
     } finally { await h.close(); }
   }
+});
+
+async function begin401(h) {
+  await h.browser.wait("document.querySelector('.my-tickets__order')");
+  await h.start(); await h.finish(null, 401);
+  await h.browser.wait("document.querySelector('.auth-modal--login')");
+  assert.equal(h.calls.refunds, 1);
+}
+
+rendered("same-account real Login starts new unfiltered verification and exactly one replay with a new deadline", async () => {
+  const h = await fixture();
+  try {
+    const original = await h.browser.evaluate("window.refundQa.identity()");
+    await begin401(h); h.setPause(true); const reads = h.reads.length;
+    await h.browser.evaluate("window.refundQaClock=100000");
+    h.setPauseLogin(true); await h.modalLogin(); await h.settle();
+    assert.equal(h.reads.length, reads); assert.equal(h.calls.refunds, 1);
+    await h.resolveLogin();
+    await h.browser.wait("window.refundQa.snapshot().phase === 'verifying'");
+    await h.waitCalls(() => h.reads.length > reads);
+    assert.ok((await h.browser.evaluate("window.refundQa.identity()")).generation > original.generation);
+    assert.equal(h.calls.refunds, 1);
+    assert.deepEqual(h.chronology.slice(-2), ["login", "tickets"]);
+    assert.equal(h.ticketCredentials.at(-1), "Bearer synthetic-new-login");
+    await h.read(reads, [order()]); await h.waitCalls(() => h.calls.refunds === 2);
+    assert.equal(h.refundCredentials.at(-1), "Bearer synthetic-new-login");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].replayCount"), 1);
+    await h.browser.evaluate("window.refundQa.resume(1);window.refundQa.resume(1);window.refundQa.mount(false);window.refundQa.mount(true)");
+    await h.settle(); assert.equal(h.calls.refunds, 2);
+    await h.browser.evaluate("window.refundQaClock=129999;window.refundQa.deadline()");
+    assert.equal(await h.browser.evaluate("window.refundQa.busy()"), true);
+    h.setPause(false); h.setData([refunded()]); await h.finish(); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().phase"), "succeeded");
+    assert.equal(await h.browser.evaluate("window.refundQaReplacements"), 0);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+  } finally { await h.close(); }
+});
+
+rendered("second Refund POST 401 ends continuation and Profile guest gate cannot reopen Login", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h); await h.modalLogin(); await h.waitCalls(() => h.calls.refunds === 2);
+    await h.finish(null, 401); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.identity()"), null);
+    for (let i = 0; i < 3; i++) {
+      await h.browser.evaluate("window.refundQa.mount(false)"); await h.settle();
+      await h.browser.evaluate("window.refundQa.mount(true);window.refundQa.navigate('/profile?tab=tickets&filter=past')"); await h.settle();
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    }
+    assert.equal(h.calls.refunds, 2); assert.equal(h.calls.logouts, 0);
+    await h.login(); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().phase"), "blocked");
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation"), null);
+    assert.equal(h.calls.refunds, 2);
+  } finally { await h.close(); }
+});
+
+rendered("failed real Login attempts and Login/Signup switching preserve only unused Refund intent", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h);
+    await h.browser.evaluate("document.querySelector('.auth-form__switch button').click()");
+    await h.browser.wait("document.querySelector('.auth-modal--signup')");
+    await h.browser.evaluate("document.querySelector('.auth-form__switch button').click()");
+    h.setLoginStatus(401);
+    for (let i = 0; i < 2; i++) {
+      await h.modalLogin(); await h.settle();
+      assert.match(await h.browser.evaluate("document.querySelector('.auth-modal').innerText"), /Invalid synthetic credentials/);
+      assert.equal(await h.browser.evaluate("document.querySelector('.auth-modal [name=email]').value"), "fixture@example.test");
+      assert.equal(h.calls.refunds, 1);
+    }
+    h.setLoginStatus(200); await h.modalLogin(); await h.waitCalls(() => h.calls.refunds === 2);
+    h.setData([refunded()]); await h.finish();
+    assert.equal(h.calls.refunds, 2);
+  } finally { await h.close(); }
+});
+
+rendered("Refund reauth honors incomplete server Profile without adding booking's completion gate", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h);
+    await h.modalLogin({ ...user(), profileComplete: false, fullName: null, mobileNumber: null, dateOfBirth: null });
+    await h.waitCalls(() => h.calls.refunds === 2);
+    assert.equal(await h.browser.evaluate("window.refundQa.user().profileComplete"), false);
+    assert.equal(await h.browser.evaluate("location.search.includes('tab=tickets')"), true);
+    assert.equal(h.calls.deletes, 0);
+    h.setData([refunded()]); await h.finish();
+  } finally { await h.close(); }
+});
+
+rendered("different-account real Login cancels Refund and exposes only the new account's Tickets", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h); h.setData([order("B-ONLY")]); await h.modalLogin(user(99));
+    await h.browser.wait("window.refundQa.identity()?.accountId === 99");
+    await h.browser.wait("document.querySelector('.my-tickets__order')?.textContent.includes('B-ONLY')");
+    assert.equal(h.calls.refunds, 1); assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.deepEqual(await h.browser.evaluate("window.refundQa.snapshot().records"), []);
+    await h.login(); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation"), null);
+  } finally { await h.close(); }
+});
+
+for (const [name, data] of [
+  ["refunded", [refunded()]], ["Past paid", [{ ...order(), isUpcoming: false, isRefundable: false }]],
+  ["non-refundable", [{ ...order(), isRefundable: false }]], ["missing reference", []],
+  ["duplicate reference", [order(), order()]], ["Order ID mismatch", [{ ...order(), id: 999 }]],
+  ["session ID mismatch", [{ ...order(), session: { ...order().session, id: 999 } }]],
+  ["incomplete Order", [{ ...order(), tickets: [] }]], ["missing flag", [{ ...order(), isRefundable: undefined }]],
+]) rendered("real Login verification of " + name + " never replays", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h); h.setData(data); await h.modalLogin();
+    await h.browser.wait("window.refundQa.identity()?.accountId === 12 && ['succeeded','blocked'].includes(window.refundQa.snapshot().phase)");
+    await h.settle(); assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation"), null);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+  } finally { await h.close(); }
+});
+
+for (const status of [500, 401]) rendered("real Login verification GET " + status + " has bounded purpose-specific recovery", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h); h.setPause(true); const index = h.reads.length;
+    await h.modalLogin(); await h.waitCalls(() => h.reads.length > index);
+    await h.read(index, [], status); await h.settle();
+    assert.equal(h.calls.refunds, 1);
+    if (status === 401) {
+      assert.equal(await h.browser.evaluate("window.refundQa.identity()"), null);
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+      await h.browser.evaluate("window.refundQa.mount(false)"); await h.settle();
+      await h.browser.evaluate("window.refundQa.mount(true)"); await h.settle();
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+      await h.login(); await h.settle(); await h.browser.evaluate("window.refundQa.verify()");
+      assert.equal(h.calls.refunds, 1);
+    } else {
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().phase"), "verification_retry");
+      const count = h.calls.tickets;
+      await h.browser.evaluate("window.refundQa.mount(false)"); await h.settle();
+      await h.browser.evaluate("window.refundQa.mount(true)"); await h.settle();
+      assert.equal(h.calls.tickets, count); assert.equal(h.calls.refunds, 1);
+      h.setPause(false);
+      await h.browser.evaluate("void window.refundQa.verify();void window.refundQa.verify()");
+      await h.waitCalls(() => h.calls.refunds === 2); h.setData([refunded()]); await h.finish();
+      assert.equal(h.calls.refunds, 2);
+    }
+  } finally { await h.close(); }
+});
+
+for (const cancellation of ["Close", "Escape", "logout", "Personal Information", "away"]) rendered(cancellation + " revokes Refund auth intent and old pending login cannot replay", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h);
+    if (cancellation !== "logout") { h.setPauseLogin(true); await h.modalLogin(); await h.settle(); }
+    if (cancellation === "Close") await h.browser.evaluate("document.querySelector('[aria-label=\"Close authentication dialog\"]').click()");
+    if (cancellation === "Escape") await h.browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    if (cancellation === "logout") await h.browser.evaluate("void window.refundQa.logout()");
+    if (cancellation === "Personal Information") await h.browser.evaluate("window.refundQa.navigate('/profile')");
+    if (cancellation === "away") await h.browser.evaluate("window.refundQa.navigate('/sessions')");
+    await h.settle();
+    if (cancellation === "logout") await h.login(); else await h.resolveLogin();
+    await h.settle();
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets')"); await h.settle();
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+for (const cancellation of ["account", "navigation", "logout"]) rendered(cancellation + " during non-aborting fresh verification blocks stale GET 401 and replay", async () => {
+  const h = await fixture({ ignoreTicketAbort: true });
+  try {
+    await begin401(h); h.setPause(true); const index = h.reads.length;
+    await h.modalLogin(); await h.waitCalls(() => h.reads.length > index);
+    if (cancellation === "account") await h.login(user(99));
+    if (cancellation === "navigation") await h.browser.evaluate("window.refundQa.navigate('/sessions')");
+    if (cancellation === "logout") await h.browser.evaluate("window.refundQa.logout()");
+    await h.settle(); const account = await h.browser.evaluate("window.refundQa.identity()");
+    await h.read(index, [], 401); await h.settle();
+    assert.deepEqual(await h.browser.evaluate("window.refundQa.identity()"), account);
+    assert.equal(h.calls.refunds, 1);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+  } finally { await h.close(); }
+});
+
+rendered("Upcoming/Past, browser history and consumer remount preserve only the authorized auth continuation", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h);
+    await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=past&keep=1')"); await h.settle();
+    await h.browser.evaluate("history.back()"); await h.settle();
+    await h.browser.evaluate("history.forward()"); await h.settle();
+    await h.browser.evaluate("window.refundQa.mount(false)"); await h.settle();
+    await h.browser.evaluate("window.refundQa.mount(true)"); await h.settle();
+    assert.equal(await h.browser.evaluate("document.querySelectorAll('.auth-modal--login').length"), 1);
+    await h.modalLogin(); await h.waitCalls(() => h.calls.refunds === 2);
+    h.setData([refunded()]); await h.finish();
+    assert.equal(h.calls.refunds, 2); assert.equal(await h.browser.evaluate("location.search.includes('keep=1')"), true);
+  } finally { await h.close(); }
+});
+
+rendered("network Refund failure and timeout/late 401 cannot authorize Login or replay", async () => {
+  for (const deadline of [false, true]) {
+    const h = await fixture();
+    try {
+      await h.browser.wait("document.querySelector('.my-tickets__order')"); await h.start();
+      if (deadline) { await h.expire(); await h.finish(null, 401); } else await h.failRefund();
+      await h.settle(); assert.equal(h.calls.refunds, 1);
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().phase"), "uncertain");
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+      await h.login(); await h.settle(); assert.equal(h.calls.refunds, 1);
+    } finally { await h.close(); }
+  }
+});
+
+
+rendered("successful Signup remains account-bound across the retained Refund authentication flow", async () => {
+  for (const id of [12, 99]) {
+    const h = await fixture();
+    try {
+      await begin401(h); h.setUser({ ...user(id), profileComplete: false });
+      await h.browser.evaluate("document.querySelector('.auth-form__switch button').click()");
+      await h.browser.wait("document.querySelector('.auth-modal--signup form')");
+      await h.browser.evaluate("(() => { const form=document.querySelector('.auth-modal form'); for(const [name,value] of Object.entries({username:'Fixture',email:'fixture@example.test',password:'fixture-password',password_confirmation:'fixture-password'})) { const input=form.elements.namedItem(name); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); } })()");
+      await h.browser.evaluate("document.querySelector('.auth-modal form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))");
+      await h.browser.wait("window.refundQa.identity()?.accountId === " + id);
+      if (id === 12) { await h.waitCalls(() => h.calls.refunds === 2); h.setData([refunded()]); await h.finish(); }
+      await h.settle(); assert.equal(h.calls.refunds, id === 12 ? 2 : 1);
+      assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+      assert.equal(await h.browser.evaluate("window.refundQa.user().profileComplete"), false);
+    } finally { await h.close(); }
+  }
+});
+
+rendered("stale Refund 401 from A preserves B's login and never opens a Refund auth flow", async () => {
+  const h = await fixture();
+  try {
+    await h.browser.wait("document.querySelector('.my-tickets__order')"); await h.start();
+    h.setData([order("B-ONLY")]); await h.login(user(99));
+    const identity = await h.browser.evaluate("window.refundQa.identity()");
+    await h.finish(null, 401); await h.settle();
+    assert.deepEqual(await h.browser.evaluate("window.refundQa.identity()"), identity);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.refunds, 1); assert.equal(h.calls.logouts, 0);
+  } finally { await h.close(); }
+});
+
+rendered("closing Signup and clicking auth backdrop revoke the retained Refund intent", async () => {
+  for (const signup of [false, true]) {
+    const h = await fixture();
+    try {
+      await begin401(h);
+      if (signup) {
+        await h.browser.evaluate("document.querySelector('.auth-form__switch button').click()");
+        await h.browser.evaluate("document.querySelector('[aria-label=\"Close authentication dialog\"]').click()");
+      } else {
+        await h.browser.evaluate("(() => { const dialog=document.querySelector('.auth-modal'); const r=dialog.getBoundingClientRect(); const options={bubbles:true,button:0,clientX:r.left-10,clientY:r.top-10}; dialog.dispatchEvent(new PointerEvent('pointerdown',options));dialog.dispatchEvent(new MouseEvent('click',options)); })()");
+      }
+      await h.settle(); assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+      await h.login(); await h.settle(); assert.equal(h.calls.refunds, 1);
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation"), null);
+    } finally { await h.close(); }
+  }
+});
+
+
+rendered("fresh partial or inconsistent refunded report retains outcome and restores complete server details without replay", async () => {
+  for (const partial of [{ reference: "REFUND-A", status: "refunded" }, { ...refunded(), id: 999 }]) {
+    const h = await fixture();
+    try {
+      await begin401(h); h.setPause(true); const index = h.reads.length;
+      await h.modalLogin(); await h.waitCalls(() => h.reads.length > index);
+      await h.read(index, [partial]); await h.settle();
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].reportedRefunded"), true);
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].displayStatus"), "refreshing");
+      assert.equal(h.calls.refunds, 1);
+      await h.waitCalls(() => h.reads.length > index + 1);
+      await h.read(h.reads.length - 1, [refunded()]);
+      await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets&filter=past')");
+      await h.browser.wait("document.querySelector('.my-tickets__status--refunded')");
+      assert.equal(h.calls.refunds, 1);
+    } finally { await h.close(); }
+  }
+});
+
+for (const scenario of ["guest Login", "guest Signup", "Refund Login"]) rendered("N2: delayed current success closes reopened " + scenario + " without reviving canceled Refund", async () => {
+  const refund = scenario === "Refund Login";
+  const h = await fixture({ guest: !refund });
+  try {
+    if (refund) await begin401(h);
+    h.setPauseLogin(true); await h.modalLogin();
+    await h.waitCalls(() => h.chronology.includes("login"));
+    await h.browser.evaluate('document.querySelector(\'[aria-label="Close authentication dialog"]\').click()');
+    await h.browser.wait("!document.querySelector('.auth-modal')");
+    await h.browser.evaluate("document.querySelector('.navbar__actions button.button--secondary').click()");
+    await h.browser.wait("document.querySelector('.auth-modal--login')");
+    if (scenario === "guest Signup") {
+      await h.browser.evaluate("document.querySelector('.auth-form__switch button').click()");
+      await h.browser.wait("document.querySelector('.auth-modal--signup')");
+    }
+    await h.resolveLogin();
+    await h.browser.wait("window.refundQa.identity()?.accountId === 12");
+    await h.settle();
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    assert.equal(h.calls.refunds, refund ? 1 : 0);
+    if (refund) {
+      assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation"), null);
+      await h.browser.evaluate("window.refundQa.navigate('/profile?tab=tickets')");
+      await h.settle(); assert.equal(h.calls.refunds, 1);
+    }
+  } finally { await h.close(); }
+});
+
+rendered("N2: delayed failed Login cannot close a reopened modal or authenticate", async () => {
+  const h = await fixture({ guest: true });
+  try {
+    h.setPauseLogin(true); await h.modalLogin();
+    await h.waitCalls(() => h.chronology.includes("login"));
+    await h.browser.evaluate('document.querySelector(\'[aria-label="Close authentication dialog"]\').click()');
+    await h.browser.wait("!document.querySelector('.auth-modal')");
+    await h.browser.evaluate("document.querySelector('.navbar__actions button.button--secondary').click()");
+    await h.browser.wait("document.querySelector('.auth-modal--login')");
+    await h.resolveLogin(user(), 401); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.identity()"), null);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal--login'))"), true);
+    assert.equal(h.calls.refunds, 0);
+  } finally { await h.close(); }
+});
+
+rendered("N3: A Refund reauth as B preserves B ordinary Tickets 401 recovery", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h); h.setPause(true); const index = h.reads.length;
+    await h.modalLogin(user(99));
+    await h.browser.wait("window.refundQa.identity()?.accountId === 99");
+    await h.waitCalls(() => h.reads.length > index); await h.settle();
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal'))"), false);
+    // Auth completion may retire an earlier read; respond to the settled current reader.
+    await h.read(h.reads.length - 1, [], 401);
+    await h.browser.wait("window.refundQa.identity() === null"); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.identity()"), null);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal--login'))"), true);
+    h.setPause(false); h.setData([order("B-ONLY")]); await h.modalLogin(user(99));
+    await h.browser.wait("document.querySelector('.my-tickets__order')?.textContent.includes('B-ONLY')");
+    assert.equal(h.calls.refunds, 1);
+    await h.login(); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.snapshot().records[0].continuation"), null);
+    assert.equal(h.calls.refunds, 1);
+  } finally { await h.close(); }
+});
+
+rendered("N3: B explicit logout after A Refund reauth restores the normal Profile guest gate", async () => {
+  const h = await fixture();
+  try {
+    await begin401(h); h.setData([order("B-ONLY")]); await h.modalLogin(user(99));
+    await h.browser.wait("document.querySelector('.my-tickets__order')?.textContent.includes('B-ONLY')");
+    await h.browser.evaluate("window.refundQa.logout()"); await h.settle();
+    assert.equal(await h.browser.evaluate("window.refundQa.identity()"), null);
+    assert.equal(await h.browser.evaluate("Boolean(document.querySelector('.auth-modal--login'))"), true);
+    assert.equal(h.calls.refunds, 1); assert.equal(h.calls.logouts, 1);
+  } finally { await h.close(); }
 });

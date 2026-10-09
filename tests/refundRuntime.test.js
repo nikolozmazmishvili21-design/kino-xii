@@ -338,7 +338,7 @@ test("normal 401 retains bounded identity only; it performs no auth effect or re
   assert.equal(h.records()[0].phase, "reauth");
   assert.deepEqual(h.records()[0].continuation, {
     type: "REFUND_REAUTH", accountId: 12, identity: { reference: "SYNTHETIC-R", orderId: 7, sessionId: 10 },
-    consentGeneration: 1, replayCount: 0, purpose: "definite-401",
+    consentGeneration: 1, requestId: 1, authGeneration: 1, replayCount: 0, purpose: "definite-401",
   });
   h.switch(null); h.switch(12, 3);
   await flush();

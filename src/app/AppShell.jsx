@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Outlet, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { ROUTES, profileTab } from "../routing/routes.js";
 import Navbar from "../components/navigation/Navbar.jsx";
@@ -19,19 +19,41 @@ export default function AppShell() {
   const { pathname, search } = useLocation();
   const { status, user, mutation, pendingAction, bookingReadyAction, setPendingAction,
     clearProtectedAction, markBookingReady, consumeBookingReady, expireSession,
-    expireProfileSession, getRequestAuth, registerAuthLifecycle } = useAuth();
+    expireProfileSession, getCurrentUser, getRequestAuth, registerAuthLifecycle } = useAuth();
+  const [authMode, setAuthMode] = useState("closed");
+  const [authModeOwner, setAuthModeOwner] = useState(null);
+  const [authPresentation, setAuthPresentation] = useState(0);
+  const authPresentationRef = useRef(0);
+  const advanceAuthPresentation = useCallback(() => {
+    setAuthPresentation(++authPresentationRef.current);
+  }, []);
   const inTickets = pathname === ROUTES.profile && profileTab(search) === "tickets";
   const ticketsContext = useRef(inTickets);
   // The factory stores this getter; it reads the ref only during later dispatch.
   // eslint-disable-next-line react-hooks/refs
   const [refund] = useState(() => createRefundRuntime({
     getAuth: getRequestAuth, isContextCurrent: () => ticketsContext.current,
+    onUnauthorized: (expected) => {
+      const current = getRequestAuth(), owner = getCurrentUser();
+      if (!current || !owner || current.accountId !== expected.accountId
+        || current.generation !== expected.generation || owner.id !== expected.accountId) return false;
+      return expireProfileSession(owner);
+    },
   }));
+  const refundAuth = useSyncExternalStore(refund.subscribe, refund.authSnapshot, refund.authSnapshot);
   useLayoutEffect(() => {
     const departed = ticketsContext.current && !inTickets;
     ticketsContext.current = inTickets;
-    if (departed) refund.cancelIntent();
-  }, [inTickets, refund]);
+    if (departed) {
+      if (refund.authSnapshot().loginRequired) {
+        advanceAuthPresentation();
+        // Route departure revokes the external auth presentation before paint.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setAuthMode("closed");
+      }
+      refund.leaveContext();
+    }
+  }, [inTickets, refund, advanceAuthPresentation]);
   useLayoutEffect(() => {
     const unsubscribe = registerAuthLifecycle((type) => {
       if (type === "logout") refund.logout();
@@ -40,7 +62,6 @@ export default function AppShell() {
     refund.syncAuth();
     return unsubscribe; // App/consumer cleanup never retires a submitted POST.
   }, [registerAuthLifecycle, refund]);
-  const [authMode, setAuthMode] = useState("closed");
   const [profileContinuation, setProfileContinuation] = useState(null);
   const continuationRef = useRef(null);
   const openerRef = useRef(null);
@@ -50,8 +71,9 @@ export default function AppShell() {
     bookingLifecycle.current = handler;
     return () => { if (bookingLifecycle.current === handler) bookingLifecycle.current = null; };
   }, []);
-  const visibleAuthMode = authMode !== "closed" ? authMode
-    : status === "guest" && (pendingAction || profileContinuation) ? "login" : "closed";
+  const visibleAuthMode = authMode !== "closed"
+    && (authModeOwner === null || (refundAuth.loginRequired && refundAuth.requestId === authModeOwner)) ? authMode
+    : status === "guest" && (pendingAction || profileContinuation || refundAuth.loginRequired) ? "login" : "closed";
 
   const finishProfileAccess = useCallback(() => {
     continuationRef.current = null;
@@ -59,20 +81,20 @@ export default function AppShell() {
   }, []);
 
   const requestProfileAccess = useCallback(() => {
-    if (continuationRef.current) return;
+    if (continuationRef.current || refund.authSnapshot().suppressProfileGate) return;
     const continuation = { type: "access" };
     continuationRef.current = continuation;
     setProfileContinuation(continuation);
-  }, []);
+  }, [refund]);
 
   const reauthenticateProfile = useCallback((expectedUser) => {
-    if (!expireProfileSession(expectedUser)) return false;
+    if (refund.authSnapshot().suppressProfileGate || !expireProfileSession(expectedUser)) return false;
     const continuation = { type: "reauth", userId: expectedUser.id };
     continuationRef.current = continuation;
     setProfileContinuation(continuation);
     setAuthMode("closed");
     return true;
-  }, [expireProfileSession]);
+  }, [expireProfileSession, refund]);
 
   useEffect(() => {
     if (pathname !== ROUTES.profile && continuationRef.current) {
@@ -82,8 +104,18 @@ export default function AppShell() {
   }, [pathname, finishProfileAccess]);
 
   // Success closes auth without cancelling intent; only the coordinator replays.
-  const finishAuth = useCallback(() => setAuthMode("closed"), []);
+  const finishAuth = useCallback((authenticatedUser) => {
+    // A current successful login closes auth even after dismissal/reopening.
+    if (!authenticatedUser || getCurrentUser() !== authenticatedUser) return;
+    const ownsPresentation = authPresentationRef.current === authPresentation;
+    const requestId = refundAuth.requestId;
+    advanceAuthPresentation();
+    setAuthMode("closed");
+    // Only the original presentation may consume its retained Refund intent.
+    if (ownsPresentation && requestId !== null) void refund.authenticationSucceeded(requestId);
+  }, [authPresentation, refundAuth.requestId, advanceAuthPresentation, refund, getCurrentUser]);
   const cancelAuth = useCallback(() => {
+    advanceAuthPresentation();
     bookingLifecycle.current?.cancelContinuation();
     refund.cancelIntent();
     const isProfileAccess = Boolean(continuationRef.current);
@@ -91,7 +123,7 @@ export default function AppShell() {
     clearProtectedAction();
     setAuthMode("closed");
     if (isProfileAccess) navigate(ROUTES.home);
-  }, [clearProtectedAction, finishProfileAccess, navigate, refund]);
+  }, [clearProtectedAction, finishProfileAccess, navigate, refund, advanceAuthPresentation]);
 
   const openBooking = useCallback((sessionId) => {
     const action = createBookingAction(sessionId);
@@ -129,9 +161,17 @@ export default function AppShell() {
   }), [openBooking, bookingReadyAction, consumeBookingReady, reauthenticateBooking, registerBookingLifecycle]);
 
   function openAuth(mode, opener) {
+    refund.beginExplicitAuthentication();
+    advanceAuthPresentation();
     openerRef.current = opener;
+    setAuthModeOwner(null);
     setAuthMode(mode);
   }
+
+  const switchAuthMode = useCallback((mode) => {
+    setAuthModeOwner(refundAuth.requestId);
+    setAuthMode(mode);
+  }, [refundAuth.requestId]);
 
   const profileAccess = useMemo(() => ({
     continuation: profileContinuation,
@@ -151,7 +191,7 @@ export default function AppShell() {
             {visibleAuthMode !== "closed" && (
               <AuthModal
                 mode={visibleAuthMode}
-                onSwitchMode={setAuthMode}
+                onSwitchMode={switchAuthMode}
                 onClose={cancelAuth}
                 onSuccess={finishAuth}
                 openerRef={openerRef}

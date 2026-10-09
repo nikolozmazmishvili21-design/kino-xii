@@ -50,12 +50,12 @@ export default function useTickets(consumeRecovery) {
     if (intent) recovery.current = intent;
     if (recovery.current?.accountId !== user.id) recovery.current = null;
     const guard = refund?.readGuard();
-    const needsAuthCoordination = barrier.records.some((record) =>
+    const needsAuthCoordination = refund?.hasContinuation() || barrier.records.some((record) =>
       record.reason === "unauthenticated" && record.authGeneration === authGeneration
       && record.settledGeneration === generation);
-    // Slice 3 owns Refund 401 auth coordination. An automatic follow-up GET 401
-    // must not indirectly open Login here. Explicit Tickets Retry stays read-only.
-    if (needsAuthCoordination && withheldAuthRead.current !== generation) {
+    // Continuation verification owns its fresh GET. Ordinary readers cannot
+    // compete with it or route a second 401 through Profile's generic gate.
+    if (needsAuthCoordination && (refund?.hasContinuation() || withheldAuthRead.current !== generation)) {
       withheldAuthRead.current = generation;
       setRead({ owner: user, attempt, authGeneration, generation, status: "error", data: [],
         error: "Unable to load your tickets. Try again.", adopted: false });
@@ -89,7 +89,10 @@ export default function useTickets(consumeRecovery) {
     }).catch((error) => {
       if (!current() || error.name === "AbortError") return;
       if (error.status === 401) {
-        reauthenticateProfile(user);
+        if (!reauthenticateProfile(user)) {
+          setRead({ owner: user, attempt, authGeneration, generation, status: "error", data: [],
+            error: "Please sign in again to load your tickets.", adopted: false });
+        }
         return;
       }
       setRead({ owner: user, attempt, authGeneration, generation, status: "error", data: [],
