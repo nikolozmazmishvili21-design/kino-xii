@@ -3226,6 +3226,30 @@ Affected areas: Home Coming Soon rendering, the Movies API module, notification 
 
 ---
 
+## D-032 — Guest and authenticated Recently Viewed partitions
+
+**Status:** Accepted user-authorized scope; implementation subject to independent review.
+**Date:** 2026-10-10
+
+### Decision
+
+This narrowly supersedes the authenticated-only Recently Viewed scope in both D-014 and D-023 §N. The user explicitly requires Movie Detail → Home history for guests as well as authenticated users. Both older decisions remain historical context; their browser-local, slug-only storage and current API-data requirements still apply. Other D-023 Movie Detail and booking policies remain unchanged.
+
+- Keep existing account keys `kino-xii:recently-viewed:{userId}`. Use `kino-xii:recently-viewed:guest` for guest browser history. Login/logout/account changes select the corresponding partition, with no automatic merge or cross-account copying.
+- Store only ordered unique movie slugs in localStorage, with a 20-entry frontend capacity bound. This bound controls browser storage/read work, not an API or cinema business rule. Malformed/unavailable storage must not crash viewing or navigation.
+- Record the actual returned movie slug only after successful active Movie Detail data loads. Failed, invalid, placeholder, obsolete route or previous-auth-scope results must not record visits. Re-viewing moves a slug to the front; Home restoration reads do not record visits.
+- Re-fetch current display data through the existing `GET /movies/{movie}`. Do not add endpoints, server synchronization, authoritative stored Movie objects or tokens to history records. Prune invalid stored values and definite 404s; retain transient read failures for explicit retry.
+- When history exists, display up to two most recent usable movies above Now Playing, with the inspected Recently Viewed/Card_Small layout and accessible React Router links through `movieDetailPath`. Empty history adds no section or divider to fresh Home.
+- Keep Home rendering/request state local. Authentication changes mask the former partition and abort/ignore its pending reads; a stale response cannot display or prune another partition. Public Movie Detail read identity depends on the actual slug (and session reads on slug/date), independently of auth changes. Capture visit ownership separately per read/retry, resolve initial session restoration, and revoke recording on subsequent auth lifecycle changes. Already loaded guest visits and late old-account results must not be copied into the new account. Login/logout must preserve MovieSessions and its selected date.
+
+### Reason and affected areas
+
+Guest support is an explicit new user requirement beyond the authenticated Figma frame. Reusing the same inspected section/card design after a guest visit preserves fresh guest Home while avoiding an invented persistence backend or merge policy.
+
+Affected areas: Recently Viewed storage/read utilities, Home section and small cards, Movie Detail successful-visit ownership, focused tests and the corresponding architecture contract. No Booking, Checkout, Refund, Notify Me or Search behavior is changed by this decision.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:

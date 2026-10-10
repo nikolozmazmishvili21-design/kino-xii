@@ -5,6 +5,7 @@ import { useNotifications } from "../notifications/NotificationContext.js";
 import ComingSoonSection from "../components/home/ComingSoonSection.jsx";
 import HeroCarousel from "../components/home/HeroCarousel.jsx";
 import NowPlayingSection from "../components/home/NowPlayingSection.jsx";
+import RecentlyViewedSection from "../components/home/RecentlyViewedSection.jsx";
 import useCatalogueSection from "../components/home/useCatalogueSection.js";
 import Footer from "../components/Footer.jsx";
 
@@ -21,6 +22,7 @@ export default function HomePage() {
   const featured = useCatalogueSection(getFeaturedMovies);
   const nowPlaying = useCatalogueSection(loadNowPlaying);
   const comingSoon = useCatalogueSection(loadComingSoon);
+  const historyOwner = status === "authenticated" ? user?.id : status === "guest" ? null : undefined;
 
   return (
     <>
@@ -28,6 +30,7 @@ export default function HomePage() {
         <h1 className="visually-hidden">Kino XII movie catalogue</h1>
         <HeroCarousel state={featured} />
         <div className="home-page__catalogue">
+          {!mutation && historyOwner !== undefined && <RecentlyViewedSection key={historyOwner ?? "guest"} userId={historyOwner} />}
           <NowPlayingSection state={nowPlaying} />
           <div className="home-page__divider" aria-hidden="true" />
           <ComingSoonSection state={comingSoon} />

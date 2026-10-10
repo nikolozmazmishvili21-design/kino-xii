@@ -11,6 +11,7 @@
 @import "./components/avatar-field.css";
 @import "./components/auth-modal.css";
 @import "./components/home-catalogue.css";
+@import "./components/recently-viewed.css";
 @import "./components/home-hero.css";
 @import "./pages/home.css";
 @import "./components/sessions-filters.css";

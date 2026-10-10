@@ -41,5 +41,5 @@ export default function useMovieRead(slug, date) {
   const state = !enabled ? { status: "idle" }
     : request.key === requestKey && result?.requestKey === requestKey
       && result.revision === revision && result.attempt === attempt ? result : { status: "loading" };
-  return { data: null, error: null, ...state, retry };
+  return { data: null, error: null, ...state, retry, requestId: JSON.stringify([requestKey, revision, attempt]) };
 }

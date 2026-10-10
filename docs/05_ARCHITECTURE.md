@@ -1481,7 +1481,7 @@ Do not create fake success state.
 Allowed:
 
 - Bearer auth token through `tokenStorage.js`
-- client-only Recently Viewed movie slugs, scoped by authenticated user ID
+- client-only Recently Viewed movie slugs in separate guest and authenticated-user-ID partitions (D-032)
 - other non-sensitive application-owned UX state only if a real requirement justifies it
 
 ### `sessionStorage`
@@ -1513,14 +1513,17 @@ Recently Viewed is client-only browser state; do not invent a backend endpoint.
 
 Rules:
 
-- applies to authenticated Home state shown in Figma
+- applies to guests and authenticated users; hide the section when current history is empty
 - store an ordered list of movie slugs only
-- scope the storage record by authenticated user ID
+- preserve `kino-xii:recently-viewed:{userId}` account records and use a separate `kino-xii:recently-viewed:guest` record; never automatically merge them
+- retain at most 20 unique slugs as a browser-local capacity bound; safely normalize malformed records and tolerate unavailable storage
 - add a movie only after Movie Detail loads successfully
 - viewing the same movie again moves its slug to the most-recent position instead of duplicating it
-- retrieve current movie data through existing API endpoints when rendering
-- prune entries that can no longer be resolved
-- exact visible-card count/layout comes from inspected Figma
+- record the actual API-returned slug; capture visit ownership per detail read/retry, resolve initial session restoration and revoke recording on later auth lifecycle changes so stale account results cannot record visits; public detail reads depend on slug independently of auth, preserving MovieSessions and its selected date on Login/logout; retain abort/revision guards for actual navigation
+- retrieve current movie data with `GET /movies/{movie}` when rendering; Home reads never count as visits
+- prune definite 404s and invalid stored values; retain transient read failures for explicit retry
+- display at most two usable movies, most recent first, using inspected Card_Small/Home geometry
+- keep rendering/read state local to the Home section; key it by partition, hide it during authentication transitions, and abort/ignore reads on auth lifecycle changes
 - do not present it as cross-device/server-synchronized history
 
 ---

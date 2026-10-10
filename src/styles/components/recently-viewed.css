@@ -1,0 +1,78 @@
+.home-section.home-section--recently-viewed {
+  gap: 20px;
+  padding-top: 9px;
+}
+
+.home-section--recently-viewed .home-section__title {
+  text-transform: none;
+}
+
+.home-section__row--recently-viewed {
+  gap: 20px;
+  /* Compensated gutters retain Figma positions and leave room for the shadow
+     and keyboard outline inside the existing horizontal scroll viewport. */
+  padding: 24px;
+  margin: -24px;
+  scroll-padding-inline: 24px;
+}
+
+.recently-viewed-card {
+  display: flex;
+  align-items: center;
+  flex: 0 0 329.121px;
+  gap: 12px;
+  width: 329.121px;
+  height: 87px;
+  padding: 10px;
+  border-radius: 16px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.recently-viewed-card:hover,
+.recently-viewed-card:active {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.2));
+}
+
+.recently-viewed-card > .movie-image {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 67px;
+  border-radius: 8px;
+}
+
+.recently-viewed-card__content {
+  display: flex;
+  flex: 0 0 210px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.recently-viewed-card__details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.recently-viewed-card h3 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: normal;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.recently-viewed-card .movie-age {
+  padding-inline: 8px;
+}
+
+.recently-viewed-error p {
+  margin: 0 0 12px;
+}
