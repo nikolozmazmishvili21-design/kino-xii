@@ -824,7 +824,7 @@ The Figma focused input state uses a low-contrast border that is not sufficientl
 
 ## D-021 — Home unresolved visual/motion source gaps
 
-**Status:** Accepted
+**Status:** Accepted; Hero motion deferral in §3 superseded by D-033 on 2026-10-10. Other source-gap boundaries remain applicable.
 **Date:** 2026-10-04
 
 ### Decision
@@ -3247,6 +3247,28 @@ This narrowly supersedes the authenticated-only Recently Viewed scope in both D-
 Guest support is an explicit new user requirement beyond the authenticated Figma frame. Reusing the same inspected section/card design after a guest visit preserves fresh guest Home while avoiding an invented persistence backend or merge policy.
 
 Affected areas: Recently Viewed storage/read utilities, Home section and small cards, Movie Detail successful-visit ownership, focused tests and the corresponding architecture contract. No Booking, Checkout, Refund, Notify Me or Search behavior is changed by this decision.
+
+---
+
+## D-033 — Home Hero playback from verified prototype and recording
+
+**Status:** Accepted user-authorized scope; implementation subject to independent review.
+**Date:** 2026-10-10
+
+### Decision
+
+Supersede only D-021's manual-only Hero motion deferral. The user supplied a local prototype recording and explicitly requested Hero autoplay, crossfade and synchronized progress. Canonical Banner prototype reactions now provide verifiable motion settings; the implementation report and Figma reference record the evidence. Preserve D-021's API-copy and unverified loading/empty/error visual boundaries.
+
+- Keep the existing public featured read and API-provided movie content/navigation. Do not add film-detail requests to manufacture missing description/premiere copy.
+- Keep playback state local to the Hero. One disposable animation-frame clock drives the dwell, transition guard and progress; manual navigation resets the dwell. Reject overlapping requests during a fade. Explicit manual navigation may replace a pending image target, including an automatic target; only the latest target can transition when ready. Late readiness for a superseded target caches that image without changing slides.
+- Preload API backdrops, retain the preceding frame until the next image is decoded or fails, and crossfade each image and its own copy as one layer. Inactive/preceding slides are inert and hidden from assistive technology.
+- Pause autoplay during pointer hover, keyboard focus, hidden-document and offscreen states; preserve elapsed dwell without accumulating background time. Use browser focus-visible semantics and local input events to distinguish keyboard focus from pointer focus, including modality changes on the same control. Pointer focus alone does not pause playback after hover ends. Reduced motion stops autoplay and makes explicit navigation immediate. Autoplay never moves focus or repeatedly announces slide changes.
+- Use the same clock for the requested linear progress fill. The prototype establishes active segment geometry/colors, but does not establish a continuously filling track; this fill is the user-requested frontend behavior, not a claimed Figma keyframe. Keep a visible active cap at zero progress and a full active segment while paused or showing a single movie.
+- Preserve loading, empty, error and Retry handling independently from the other Home sections. Empty/single lists run no playback clock. Clean up the clock and observers on unmount and StrictMode replay.
+
+### Reason and affected areas
+
+The recording and readable prototype reactions resolve the earlier evidence gap. This scope changes only Home Hero playback/presentation and its focused validation; it does not authorize Now Playing animations or changes to auth, history, notifications, Search, Sessions, Booking, Checkout or Refund.
 
 ---
 

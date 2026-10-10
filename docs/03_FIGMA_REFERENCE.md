@@ -423,6 +423,18 @@ Each banner is:
 
 A small slider/navigation control also exists in set `148:3212`.
 
+### Hero motion verified on 2026-10-10
+
+Read canonical file `Zeb7RQ8mjGp04YIPde2ud2`, Banner variants above and controls `148:3212`; inspect the user-supplied `bandicam 2026-10-10 16-47-12-363.mp4` frame by frame before implementation. The recording is 2560×1440, 28.966633 seconds, with 653 variable-duration encoded frames. All frames were decoded at their sample timestamps into 11 annotated contact sheets and visually inspected. Source frames and sheets are ignored QA artifacts, not application assets.
+
+The motion endpoint returns no timeline nodes for the Banner set. Read-only Plugin API inspection does expose prototype reactions: each variant uses `AFTER_TIMEOUT` 3 seconds, then `CHANGE_TO` the next variant with `DISSOLVE`, `EASE_OUT`, 0.3 seconds, including last → first. Arrow reactions generally use 0.3 seconds (`DISSOLVE` or `SMART_ANIMATE`); the last variant's Previous reaction is explicitly 0.7 seconds. Arrow hover is 0.7 seconds ease-out to the Hover variant. These are verified canonical-copy settings, not claimed inspection of the separate original prototype file `rBonynbM7wSNOmPs4cryxT`.
+
+The recording independently shows overlapping image/text crossfades and an uninterrupted sequence near 14.1, 17.4, 20.7 and 24.0 seconds: approximately 3.3 seconds between transition starts (3-second dwell plus 300 ms fade). Frame quantization and user interactions prevent an exact recording-only interval/easing claim. The prototype reactions supply the exact implementation settings. Manual rapid navigation earlier in the recording can interrupt transitions; the requested implementation intentionally guards overlapping transitions.
+
+Verified Banner/control geometry: 760 px Hero height, copy/navigation 67 px horizontal inset, copy 179 px bottom inset, navigation 42 px bottom inset, 3 px segment height, 8 px segment gap, 24 px navigation gap, 54×54 px arrow buttons, 34×34 px arrow icons and 12 px arrow gap. Banner image is 1062.72 px high at -88.56 px with cover cropping. Default arrow background is rgba(7,12,28,0.2); hover is page background with 0 2 px 8 px black/20% shadow. All movie imagery/copy remains API-owned; the missing list-level synopsis/premiere fields remain governed by D-021.
+
+Continuous linear fill within the current segment is the user's requested progress behavior; no such keyframe track was returned by Figma. It reuses the verified 3 px track, white/red colors and shared dwell clock, with a 3 px active cap at zero progress. Paused/reduced-motion/single-slide states show the full active segment.
+
 ---
 
 ## 9. Search components

@@ -8,7 +8,22 @@
 .home-hero__slide {
   position: absolute;
   inset: 0;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
+
+.home-hero__playback { position: absolute; inset: 0; }
+
+.home-hero__slide--active,
+.home-hero__slide--previous { visibility: visible; opacity: 1; }
+
+.home-hero__slide--active { z-index: 1; pointer-events: auto; }
+
+/* Incoming opacity over an opaque preceding frame is a true crossfade: no dark/blank midpoint. */
+.home-hero__slide--entering { animation: hero-crossfade var(--hero-fade-duration) ease-out both; }
+
+@keyframes hero-crossfade { from { opacity: 0; } to { opacity: 1; } }
 
 .home-hero .movie-image--backdrop {
   position: absolute;
@@ -31,7 +46,7 @@
   bottom: 179px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
   width: 580px;
   max-width: calc(100% - 134px);
 }
@@ -40,7 +55,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 15px;
+  gap: 18px;
 }
 
 .home-hero__title {
@@ -82,7 +97,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 10px;
+  gap: 12px;
 }
 
 .home-hero__actions .button {
@@ -96,35 +111,46 @@
 
 .home-hero__navigation {
   position: absolute;
+  z-index: 2;
   right: 67px;
   bottom: 42px;
   left: 67px;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 24px;
 }
 
 .home-hero__progress {
   display: flex;
   flex: 1;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
 }
 
 .home-hero__bar {
+  position: relative;
+  overflow: hidden;
   flex: 1;
   height: 3px;
   border-radius: 999px;
   background: var(--color-text);
 }
 
-.home-hero__bar--active {
+.home-hero__bar--active::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  min-width: 3px;
+  border-radius: inherit;
   background: var(--color-accent);
+  content: "";
 }
+
+.home-hero__playback--playing .home-hero__bar--active::after { width: calc(100% * var(--hero-progress, 0)); }
 
 .home-hero__arrows {
   display: flex;
-  gap: 10px;
+  gap: 12px;
 }
 
 .home-hero__arrow {
@@ -139,6 +165,12 @@
   border-radius: 999px;
   background: rgba(7, 12, 28, 0.2);
   cursor: pointer;
+  transition: background-color 700ms ease-out, box-shadow 700ms ease-out;
+}
+
+.home-hero__arrow:not(:disabled):hover {
+  background: var(--color-page);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .home-hero__arrow--next > img {
@@ -155,4 +187,9 @@
   left: 67px;
   width: 580px;
   max-width: calc(100% - 134px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-hero__slide--entering { animation: none; }
+  .home-hero__arrow { transition: none; }
 }

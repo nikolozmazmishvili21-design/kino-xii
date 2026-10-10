@@ -1540,6 +1540,8 @@ Own page-local:
 - hero UI state
 - Recently Viewed rendering request state
 
+Hero playback is owned by `useHeroPlayback` and its standalone `createHeroPlayback` controller. One animation-frame clock synchronizes dwell, progress and guarded crossfades; API backdrop decode readiness precedes each transition. Pause reasons are independent (keyboard focus, pointer hover, document visibility and viewport intersection). Hidden/offscreen time does not accumulate; reduced motion uses immediate manual navigation. Destroy the controller and observers on unmount/StrictMode cleanup. Outgoing/inactive slides remain outside the accessibility tree and tab order. Playback does not reset the other Home sections or introduce shared application state; see D-033.
+
 Shared auth/filter-options data comes from providers.
 
 ### Sessions

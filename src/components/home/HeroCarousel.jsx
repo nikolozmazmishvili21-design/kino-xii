@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { Link } from "react-router-dom";
 import { ROUTES, movieDetailPath } from "../../routing/routes.js";
 import arrowIcon from "../../assets/icons/home-arrow-left.svg";
@@ -7,10 +7,16 @@ import timerIcon from "../../assets/icons/home-timer.svg";
 import AgeBadge from "./AgeBadge.jsx";
 import MovieImage from "./MovieImage.jsx";
 import SectionState from "./SectionState.jsx";
+import useHeroPlayback from "./useHeroPlayback.js";
 
-function FeaturedSlide({ movie }) {
+function FeaturedSlide({ movie, position, count, playback }) {
+  const active = position === playback.index;
+  const previous = position === playback.previous;
   return (
-    <div className="home-hero__slide">
+    <div className={`home-hero__slide${active ? " home-hero__slide--active" : ""}${previous ? " home-hero__slide--previous" : ""}${active && playback.phase === "fading" ? " home-hero__slide--entering" : ""}`}
+      role="group" aria-roledescription="slide" aria-label={`${position + 1} of ${count}: ${movie.title}`}
+      aria-hidden={!active} inert={!active}
+      onLoadCapture={event => playback.imageReady(position, event)} onErrorCapture={event => playback.imageReady(position, event)}>
       <MovieImage src={movie.backdropUrl} title={movie.title} backdrop />
       <div className="home-hero__copy">
         <div className="home-hero__details">
@@ -41,35 +47,39 @@ function FeaturedSlide({ movie }) {
 }
 
 function FeaturedMovies({ movies }) {
-  const [index, setIndex] = useState(0);
-  const movie = movies[index];
-
-  function move(direction) {
-    setIndex((current) => (current + direction + movies.length) % movies.length);
-  }
+  const playbackRef = useRef(null);
+  const playback = useHeroPlayback(movies, playbackRef);
+  const movie = movies[playback.index];
 
   return (
-    <>
-      <FeaturedSlide movie={movie} key={movie.id} />
+    <div className={`home-hero__playback${playback.playing ? " home-hero__playback--playing" : ""}`} ref={playbackRef}
+      style={{ "--hero-fade-duration": `${playback.duration}ms` }}
+      onPointerEnter={() => playback.pause("pointer", true)} onPointerLeave={() => playback.pause("pointer", false)}
+      onFocusCapture={event => playback.pause("focus", event.target.matches(":focus-visible"))}
+      // Input can change modality without moving focus (e.g. clicking an already focused arrow).
+      onPointerDownCapture={() => playback.pause("focus", false)}
+      onKeyDownCapture={event => { if (!event.altKey && !event.ctrlKey && !event.metaKey) playback.pause("focus", true); }}
+      onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) playback.pause("focus", false); }}>
+      {movies.map((item, position) => <FeaturedSlide movie={item} position={position} count={movies.length} playback={playback} key={item.id} />)}
       <div className="home-hero__navigation">
         <div className="home-hero__progress" aria-hidden="true">
           {movies.map((item, position) => (
-            <span className={`home-hero__bar${position === index ? " home-hero__bar--active" : ""}`} key={item.id} />
+            <span className={`home-hero__bar${position === playback.index ? " home-hero__bar--active" : ""}`} key={item.id} />
           ))}
         </div>
-        <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
-          Featured movie {index + 1} of {movies.length}: {movie.title}
+        <p className="visually-hidden" role="status" aria-live={playback.playing ? "off" : "polite"} aria-atomic="true">
+          Featured movie {playback.index + 1} of {movies.length}: {movie.title}
         </p>
         <div className="home-hero__arrows">
-          <button type="button" className="home-hero__arrow" aria-label="Previous featured movie" disabled={movies.length === 1} onClick={() => move(-1)}>
+          <button type="button" className="home-hero__arrow" aria-label="Previous featured movie" disabled={movies.length === 1} onClick={() => playback.move(-1)}>
             <img src={arrowIcon} alt="" />
           </button>
-          <button type="button" className="home-hero__arrow home-hero__arrow--next" aria-label="Next featured movie" disabled={movies.length === 1} onClick={() => move(1)}>
+          <button type="button" className="home-hero__arrow home-hero__arrow--next" aria-label="Next featured movie" disabled={movies.length === 1} onClick={() => playback.move(1)}>
             <img src={arrowIcon} alt="" />
           </button>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
