@@ -80,13 +80,21 @@ export default function AuthProvider({ children }) {
   }, [updateActions]);
 
   const markBookingReady = useCallback((action) => {
-    if (mutation.current || authState.status !== "authenticated"
+    if (action?.type !== "OPEN_BOOKING" || mutation.current || authState.status !== "authenticated"
       || currentUser.current?.profileComplete !== true
       || protectedActions.current.pendingAction !== action) return false;
 
     updateActions({ pendingAction: null, bookingReadyAction: action });
     return true;
   }, [authState.status, updateActions]);
+
+  const consumeNotifyAction = useCallback((expectedAction) => {
+    const action = protectedActions.current.pendingAction;
+    if (action?.type !== "NOTIFY_MOVIE" || action !== expectedAction || mutation.current
+      || !session.current || !currentUser.current) return null;
+    updateActions({ pendingAction: null, bookingReadyAction: null });
+    return action;
+  }, [updateActions]);
 
   // Future consumers pass their ready snapshot and proceed only on a non-null return.
   const consumeBookingReady = useCallback((expectedAction) => {
@@ -343,6 +351,7 @@ export default function AuthProvider({ children }) {
       clearProtectedAction,
       markBookingReady,
       consumeBookingReady,
+      consumeNotifyAction,
       replaceUser,
       expireSession,
       expireProfileSession,
@@ -354,7 +363,7 @@ export default function AuthProvider({ children }) {
       getSessionIdentity,
     }),
     [authState, actionState, login, register, logout, restoreSession,
-      setPendingAction, clearProtectedAction, markBookingReady, consumeBookingReady,
+      setPendingAction, clearProtectedAction, markBookingReady, consumeBookingReady, consumeNotifyAction,
       replaceUser, expireSession, expireProfileSession, isCurrentUser, getCurrentUser, registerBookingLogout, registerAuthLifecycle, getRequestAuth, getSessionIdentity],
   );
 

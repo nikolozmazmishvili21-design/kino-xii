@@ -3205,6 +3205,27 @@ This checkpoint modifies docs/06_DECISIONS.md only. It implements no Refund, cha
 
 ---
 
+## D-031 — Home Coming Soon Notify Me and preserved catalogue navigation
+
+Status: Accepted user-authorized scope; implementation remains subject to independent review.
+
+Decision date: 2026-10-10
+
+D-023 §K says: “`Notify Me` remains a separate feature unless a later scoped implementation verifies and wires the relevant API/Figma behavior.” This decision records that later user-approved Home Coming Soon scope and supersedes only its notification deferral for Home. D-023's Movie Detail and booking boundaries remain applicable; no historical decision is erased or expanded into Movie Detail notification behavior.
+
+- Use the existing authenticated, bodyless `POST /movies/{movie}/notify`, with the exact server movie slug and captured Bearer authentication. Show **You will be notified** only after a server-confirmed HTTP 201 subscription for that movie.
+- Retain a bounded `NOTIFY_MOVIE` protected action through the existing Login/Signup flow. Guest and expired-auth continuation use the existing identity-checked, once-consumed client replay; notification does not introduce booking profile requirements. Preserve cancellation and account/session isolation.
+- Restore subscription state only from optional boolean `isNotified: true` supplied by a verified GET belonging to the current authenticated session. This optional extension is not a new required Movie field. Production authenticated-true semantics have not been independently established; fixture coverage does not imply backend persistence guarantees.
+- Keep confirmed state in current-session application memory. Do not fabricate subscription persistence in localStorage/sessionStorage or infer a subscription from a guest, absent, false, nonboolean or stale response.
+- Pending, auth-transition/auth-waiting and confirmed-success Notify controls remain focusable with `aria-disabled`, an explicit activation guard, and the existing runtime dispatch/session guards. Preserve live announcements, the modal focus trap and its existing opener restoration.
+- Preserve both Home **Coming Soon See all → `/sessions`** and **Now Playing See all → `/sessions`**, using their existing React Router links. Do not add a route or a Coming Soon page.
+
+Reason: the user explicitly approved the separately scoped Notify implementation and preservation of both original catalogue links. This reconciles that scope with D-023's historical deferral without adding API contracts, persistence promises or business rules.
+
+Affected areas: Home Coming Soon rendering, the Movies API module, notification runtime/context, existing protected-action integration and focused regression tests. Checkout, Booking, Refund, Search and Navbar behavior are outside this decision's implementation scope.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:

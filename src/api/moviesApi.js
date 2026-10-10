@@ -20,12 +20,12 @@ export async function getFeaturedMovies({ signal } = {}) {
   return response.data?.data;
 }
 
-async function getCatalogue(path, { limit, signal } = {}) {
+async function getCatalogue(path, { limit, signal, token } = {}) {
   const query = new URLSearchParams();
   if (limit !== undefined) query.set("limit", String(limit));
   const queryString = query.toString();
   const suffix = queryString ? `?${queryString}` : "";
-  const response = await apiRequest(`${path}${suffix}`, { signal });
+  const response = await apiRequest(`${path}${suffix}`, { signal, token });
   return response.data?.data;
 }
 
@@ -35,6 +35,18 @@ export function getNowPlayingMovies(options) {
 
 export function getComingSoonMovies(options) {
   return getCatalogue("/movies/coming-soon", options);
+}
+
+export async function notifyMovie(slug, { token, signal, movieId } = {}) {
+  const response = await apiRequest(`/movies/${encodeURIComponent(slug)}/notify`, {
+    method: "POST", token, signal,
+  });
+  const data = response.data?.data;
+  if (response.status !== 201 || data?.subscribed !== true || !Number.isSafeInteger(data.movieId)
+    || data.movieId <= 0 || (movieId !== undefined && data.movieId !== movieId)) {
+    throw new ApiError("Your notification subscription could not be confirmed. Please try again.", { status: response.status });
+  }
+  return data;
 }
 
 export async function getMovie(slug, { signal } = {}) {

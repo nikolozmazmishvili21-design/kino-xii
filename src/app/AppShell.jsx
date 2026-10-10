@@ -10,6 +10,8 @@ import { ProfileAccessContext } from "../auth/ProfileAccessContext.js";
 import { RefundContext } from "../tickets/RefundContext.js";
 import { createRefundRuntime } from "../tickets/refundRuntime.js";
 import BookingProvider from "../booking/BookingProvider.jsx";
+import { NotificationContext } from "../notifications/NotificationContext.js";
+import { createNotificationRuntime } from "../notifications/notificationRuntime.js";
 
 export default function AppShell() {
   const isHome = useMatch(ROUTES.home);
@@ -19,7 +21,7 @@ export default function AppShell() {
   const { pathname, search } = useLocation();
   const { status, user, mutation, pendingAction, bookingReadyAction, setPendingAction,
     clearProtectedAction, markBookingReady, consumeBookingReady, expireSession,
-    expireProfileSession, getCurrentUser, getRequestAuth, registerAuthLifecycle } = useAuth();
+    expireProfileSession, getCurrentUser, getRequestAuth, registerAuthLifecycle, consumeNotifyAction } = useAuth();
   const [authMode, setAuthMode] = useState("closed");
   const [authModeOwner, setAuthModeOwner] = useState(null);
   const [authPresentation, setAuthPresentation] = useState(0);
@@ -65,6 +67,26 @@ export default function AppShell() {
   const [profileContinuation, setProfileContinuation] = useState(null);
   const continuationRef = useRef(null);
   const openerRef = useRef(null);
+  // The factory retains this callback; it accesses the opener only on an action.
+  // eslint-disable-next-line react-hooks/refs
+  const [notifications] = useState(() => createNotificationRuntime({
+    getAuth: getRequestAuth,
+    requestAuthentication: (action, expired, { replay = false } = {}) => {
+      const opener = document.activeElement;
+      if (opener && !opener.closest("dialog")) openerRef.current = opener;
+      if (expired) {
+        const accepted = expireSession(action);
+        if (accepted && replay) clearProtectedAction();
+        return accepted;
+      }
+      return setPendingAction(action, { newIntent: true });
+    },
+  }));
+  useLayoutEffect(() => {
+    const unsubscribe = registerAuthLifecycle(notifications.syncAuth);
+    notifications.syncAuth();
+    return unsubscribe;
+  }, [notifications, registerAuthLifecycle]);
   const profileHandoff = useRef(null);
   const bookingLifecycle = useRef(null);
   const registerBookingLifecycle = useCallback((handler) => {
@@ -118,12 +140,13 @@ export default function AppShell() {
     advanceAuthPresentation();
     bookingLifecycle.current?.cancelContinuation();
     refund.cancelIntent();
+    notifications.cancelContinuation();
     const isProfileAccess = Boolean(continuationRef.current);
     finishProfileAccess();
     clearProtectedAction();
     setAuthMode("closed");
     if (isProfileAccess) navigate(ROUTES.home);
-  }, [clearProtectedAction, finishProfileAccess, navigate, refund, advanceAuthPresentation]);
+  }, [clearProtectedAction, finishProfileAccess, navigate, refund, advanceAuthPresentation, notifications]);
 
   const openBooking = useCallback((sessionId) => {
     const action = createBookingAction(sessionId);
@@ -142,6 +165,12 @@ export default function AppShell() {
     if (!pendingAction || status !== "authenticated" || mutation
       || visibleAuthMode !== "closed") return;
 
+    if (pendingAction.type === "NOTIFY_MOVIE") {
+      const action = consumeNotifyAction(pendingAction);
+      if (action) void notifications.request(action.payload.movieSlug, { replay: true });
+      return;
+    }
+
     if (user?.profileComplete === true) {
       markBookingReady(pendingAction);
     } else if (user?.profileComplete === false && profileHandoff.current !== pendingAction) {
@@ -149,7 +178,7 @@ export default function AppShell() {
       profileHandoff.current = pendingAction;
       if (pathname !== ROUTES.profile) navigate(ROUTES.profile);
     }
-  }, [pendingAction, status, user, mutation, visibleAuthMode, markBookingReady, pathname, navigate]);
+  }, [pendingAction, status, user, mutation, visibleAuthMode, markBookingReady, pathname, navigate, consumeNotifyAction, notifications]);
 
   const bookingEntry = useMemo(() => ({
     openBooking,
@@ -181,6 +210,7 @@ export default function AppShell() {
   }), [profileContinuation, requestProfileAccess, reauthenticateProfile, finishProfileAccess]);
 
   return (
+    <NotificationContext.Provider value={notifications}>
     <RefundContext.Provider value={refund}>
     <BookingEntryContext.Provider value={bookingEntry}>
       <ProfileAccessContext.Provider value={profileAccess}>
@@ -202,5 +232,6 @@ export default function AppShell() {
       </ProfileAccessContext.Provider>
     </BookingEntryContext.Provider>
     </RefundContext.Provider>
+    </NotificationContext.Provider>
   );
 }
