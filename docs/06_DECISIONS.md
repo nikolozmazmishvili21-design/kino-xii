@@ -3272,6 +3272,24 @@ The recording and readable prototype reactions resolve the earlier evidence gap.
 
 ---
 
+## D-034 — Now Playing hover/focus previews from documented MovieDetail reads
+
+**Status:** Accepted user-authorized scope; implementation subject to independent review.
+**Date:** 2026-10-10
+
+The user explicitly requests the Card_big prototype interaction and on-demand real synopsis data. This applies D-021's source-gap discipline to verified Now Playing interactions and the documented MovieDetail schema; it does not change D-021's Hero list-copy boundary or unrelated source-gap rules. Measurements and recording evidence belong in `03_FIGMA_REFERENCE.md`.
+
+- Use the independently verified 300 ms linear Smart Animate duration/easing for actual width, poster-height and synopsis-opacity transitions. Preserve the fixed card height and horizontal sibling order. Reversals use native CSS transition interpolation, including shortening during rapid reversals; reduced motion removes transitions.
+- Use the explicitly requested standalone Card_big geometry/typography rather than smaller Home-instance overrides. Retain the same API poster in both states, with cover cropping; no alternate asset URL or invented movie story is introduced.
+- Pointer hover and keyboard focus reveal the same preview. Keep stable sibling links for card content and Buy Ticket, with Retry outside either link. Pointer focus alone does not latch expansion after pointer leave. Keyboard focus remains usable as the layout changes; entering another card with the pointer can temporarily take preview priority.
+- Load synopsis via the existing documented public `GET /movies/{movie}` only on preview interaction. Keep a section-owned slug cache that deduplicates pending/successful reads, caches missing synopsis, retries failures only explicitly, aborts on unmount and invalidates stale settlements. Missing/error copy is neutral UI text, never a substitute plot.
+- Preview reads never invoke the Recently Viewed visit writer. Only a successful actual Movie Detail visit records history under D-032. Do not persist preview data or add global state.
+- Preserve the clipped, scrollable row. A local observer scrolls horizontally only as needed to keep the active card's actions visible near the right edge. Smaller viewports retain horizontal scrolling and cap expansion to the available row width; reduced motion changes state immediately. Existing See all → `/sessions` and Buy Ticket → Movie Detail remain unchanged.
+
+Affected areas: Now Playing section/card, section-owned preview controller/hook, narrowly scoped catalogue styles, focused tests and documentation. Hero, Recently Viewed implementation, Coming Soon, auth, Booking, Checkout and Refund remain outside implementation scope.
+
+---
+
 # Decision-log maintenance rules
 
 When resolving a Pending decision:

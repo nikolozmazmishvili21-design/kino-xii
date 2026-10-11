@@ -34,7 +34,7 @@ after(async () => { await server?.close(); });
 
 async function fixture({ guest = false, width = 1920, movies = [29, 32, 26, 25].map(id => movie(id)), pauseRead = false, ignoreAbort = false, pauseLogin = false } = {}) {
   const browser = await connectProfileBrowser(endpoint);
-  const calls = { posts: [], gets: [], logins: [], registrations: [], forbidden: [], exceptions: [] }, tasks = new Set(), errors = [];
+  const calls = { posts: [], gets: [], previews: [], logins: [], registrations: [], forbidden: [], exceptions: [] }, tasks = new Set(), errors = [];
   const requestWaiters = new Set();
   const record = (kind, event) => {
     calls[kind].push(event);
@@ -90,6 +90,13 @@ async function fixture({ guest = false, width = 1920, movies = [29, 32, 26, 25].
         }
         if (method === "GET" && url.pathname === "/api/movies/featured") return json(event, { data: [movie(100, { isComingSoon: false, backdropUrl: null })] });
         if (method === "GET" && url.pathname === "/api/movies/now-playing") return json(event, { data: Array.from({ length: 6 }, (_, i) => movie(100 + i, { isComingSoon: false, fromPrice: 14 })) });
+        // Tab traverses Now Playing before Notify; its public synopsis reads are legitimate.
+        if (method === "GET" && /^\/api\/movies\/exact-server-10[0-5]$/.test(url.pathname)) {
+          record("previews", event);
+          return json(event, { data: movie(Number(url.pathname.split("-").at(-1)), {
+            isComingSoon: false, fromPrice: 14, availableDates: [], synopsis: "Server-owned preview synopsis.",
+          }) });
+        }
         if (method === "POST" && /^\/api\/movies\/[^/]+\/notify$/.test(url.pathname)) { record("posts", event); return; }
         if (method === "POST" && url.pathname === "/api/login") {
           record("logins", event);

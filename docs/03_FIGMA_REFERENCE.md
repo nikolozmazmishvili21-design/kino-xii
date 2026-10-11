@@ -287,7 +287,17 @@ Base size:
 Default size:
 - 260×452
 
-Hover/expanded variants are wider.
+### Now Playing hover verified on 2026-10-10
+
+Read all three variants in editable canonical copy `Zeb7RQ8mjGp04YIPde2ud2`, and guest/authenticated Home instances `139:2899` / `272:3698`. Default is 260×452; Hover and Variant3 are 447×452. All use 14 px padding, 20 px radius and #1e2031 background. Expanded variants add a 1 px #2a2c3d border. The Default poster is 232×300; the expanded poster is 417×224.4326171875, with 14 px radius. All three use the **same image hash**, identity image transform and FILL crop: retain the API poster and change its cover crop, rather than substitute the backdrop.
+
+Content is 426.4326171875 px high, vertically centered (y≈12.7837). Body height is 379.4326171875 px; the 35 px footer begins at content y=391.4326171875. The image/details gap is 12 px; details use 8 px gaps, 20 px/800 title, 14 px/400 metadata, and a 12 px/600 badge with 4×8 px padding. Expanded synopsis starts at content y=325.4326171875, occupies 54 px, and uses 14 px/400 text at 130% line height. Hover reserves 20 px trailing synopsis padding; Variant3 reserves none. Price is 14 px/800; Buy Ticket retains 10×22 px padding. The Home row gap is 17 px and its viewport clips horizontally. Home instances override padding to 12 px, title to 18 px and metadata/price to 12 px; this task explicitly selects the standalone Card_big typography and padding above.
+
+Read-only Plugin API reactions independently verify Default `ON_HOVER → CHANGE_TO 108:2792`, `SMART_ANIMATE`, `LINEAR`, duration 0.30000001192092896 seconds. Hover `ON_PRESS` changes to Variant3 without a separate transition; its geometry is identical. Existing detail navigation is retained without introducing route transitions. `get_motion_context` returns no timeline nodes; these settings come from readable prototype reactions, not a generated keyframe export or claimed access to the original separate prototype file.
+
+The actual local recording `Documents/Bandicam/bandicam 2026-10-10 16-47-12-363.mp4` was decoded before editing. Inspected full-resolution frames across 19–26 seconds, including 22.0333, 22.1333, 22.2333 and 22.3333: Dune widens as Avengers contracts, the same portrait image changes crop, the synopsis fades in during layout movement, neighbors shift and the footer stays fixed. Spider-Man is expanded by 23.2 seconds. Recording sampling supports roughly 300 ms, but does not independently prove exact duration/easing; exact 300 ms linear comes from the reaction above. Reverse CSS transitions reuse those settings; browser reversal shortening is native CSS behavior. Fractional layout values are rounded to browser layout pixels.
+
+Motion-export limitation (skill wording): “Prototype interactions aren't currently supported in MCP. Keyframes on the canvas are visible, but not the smart animate interactions between frames or their transition settings. Code generated from this selection will represent the start and end states, not the transition between them.” The separate read-only Plugin API reaction inspection supplies the otherwise missing transition metadata here.
 
 ---
 

@@ -1544,6 +1544,8 @@ Hero playback is owned by `useHeroPlayback` and its standalone `createHeroPlayba
 
 Shared auth/filter-options data comes from providers.
 
+Now Playing owns its active hover/focus slug and a section-lifetime MovieDetail preview cache (`useNowPlayingPreviews` / `createNowPlayingPreviews`). The existing public `getMovie` API helper supplies synopsis only on interaction; pending and successful reads are deduplicated by slug, errors require explicit Retry, and cleanup aborts all reads and fences late settlements. No preview read invokes Movie Detail's successful-visit writer or stores history. CSS transitions change actual card width/image height; a local ResizeObserver keeps an expanding card inside the horizontal row without moving the page vertically. See D-034.
+
 ### Sessions
 
 Own:

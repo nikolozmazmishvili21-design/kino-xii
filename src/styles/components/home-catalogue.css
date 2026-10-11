@@ -43,28 +43,137 @@
   flex: 0 0 260px;
   width: 260px;
   height: 452px;
-  padding: 12px;
+  padding: 14px;
+  border: 0 solid transparent;
   border-radius: 20px;
   background: var(--color-surface);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2), inset 0 0 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  transition: width 300ms linear, flex-basis 300ms linear, border-width 300ms linear, border-color 300ms linear;
+}
+
+.movie-card--expanded {
+  flex-basis: 447px;
+  width: 447px;
+  border-width: 1px;
+  border-color: var(--color-raised);
 }
 
 .movie-card__content,
 .movie-card__body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
   min-width: 0;
 }
 
 .movie-card__body {
+  position: relative;
+  flex-shrink: 0;
   height: 379.433px;
+}
+
+.movie-card__content {
+  flex-shrink: 0;
+  height: 426.433px;
+}
+
+.movie-card__main {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 12px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.movie-card__main:focus-visible {
+  outline-offset: -2px;
+  border-radius: 14px;
+}
+
+.movie-card__main::after {
+  position: absolute;
+  inset: 0;
+  content: "";
 }
 
 .movie-card .movie-image {
   flex: 0 0 300px;
   height: 300px;
+  transition: height 300ms linear, flex-basis 300ms linear;
+}
+
+.movie-card--expanded .movie-image {
+  flex-basis: 224.433px;
+  height: 224.433px;
+}
+
+.home-row-viewport--now-playing {
+  container-type: inline-size;
+}
+
+.movie-card__preview {
+  --synopsis-inset: 20px;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 54px;
+  overflow: clip;
+  /* Preserve the Retry focus ring inside the card's existing 14px padding. */
+  overflow-clip-margin: 5px;
+  padding-right: var(--synopsis-inset);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: none;
+}
+
+.movie-card--expanded .movie-card__preview {
+  opacity: 1;
+  visibility: visible;
+  /* Reveal the whole block at the existing expansion endpoint. Removing this
+     rule on exit hides it immediately, before the card starts shrinking. */
+  transition: opacity 300ms step-end, visibility 300ms step-end;
+}
+
+.movie-card--expanded.movie-card--preview-ready .movie-card__preview {
+  /* Match the actual endpoint of an interrupted, shortened CSS reversal. */
+  transition: none;
+}
+
+.movie-card--expanded:active .movie-card__preview {
+  --synopsis-inset: 0px;
+}
+
+.movie-card__synopsis {
+  display: -webkit-box;
+  /* Stable expanded-width wrapping, independent of the clipping wrapper. */
+  width: calc(clamp(230px, calc(100cqw - 30px), 417px) - var(--synopsis-inset));
+  overflow: hidden;
+  max-height: 100%;
+  margin: 0;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--color-muted);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.movie-card__retry {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: 14px;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .movie-card__details,
@@ -87,9 +196,10 @@
 }
 
 .movie-card__title {
-  font-size: 18px;
+  width: 100%;
+  font-size: 20px;
   font-weight: 800;
-  line-height: normal;
+  line-height: 22px;
 }
 
 .movie-card__metadata {
@@ -99,24 +209,49 @@
   line-height: 1.3;
 }
 
+.movie-card .movie-card__metadata {
+  width: 100%;
+  height: 18px;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.movie-card__details {
+  gap: 8px;
+}
+
+.movie-card .movie-age {
+  padding: 4px 8px;
+  line-height: 13px;
+}
+
 .movie-card__footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
+  gap: 12px;
+  height: 35px;
 }
 
 .movie-card__price {
   margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: normal;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 15px;
 }
 
 .movie-card__buy {
   flex-shrink: 0;
   padding: 10px 22px;
   text-decoration: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .movie-card, .movie-card .movie-image, .movie-card .movie-card__preview { transition: none; }
+}
+
+@media (max-width: 586px) {
+  .movie-card--expanded { width: 100%; flex-basis: 100%; min-width: 260px; }
 }
 
 .coming-soon-item {
