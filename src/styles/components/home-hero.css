@@ -107,6 +107,12 @@
 .home-hero__sessions {
   background: var(--tint-white);
   color: var(--color-text);
+  cursor: pointer;
+  transition: background-color 300ms ease-out;
+}
+
+.home-hero__sessions:hover {
+  background: var(--color-muted);
 }
 
 .home-hero__navigation {
@@ -191,5 +197,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .home-hero__slide--entering { animation: none; }
-  .home-hero__arrow { transition: none; }
+  .home-hero__arrow,
+  .home-hero__sessions { transition: none; }
 }
