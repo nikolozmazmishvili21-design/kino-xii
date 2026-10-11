@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { bootstrapApp } from "./bootstrap.js";
 import { AppBootstrapContext } from "./AppBootstrapContext.js";
 import { useAuth } from "../auth/AuthContext.js";
+import StartupLoader from "./StartupLoader.jsx";
 
 const INITIAL_STATE = {
   status: "loading",
@@ -62,11 +63,7 @@ export default function AppBootstrapProvider({ children }) {
   let content = children;
 
   if (bootstrapState.status === "loading") {
-    content = (
-      <main>
-        <p role="status">Loading application...</p>
-      </main>
-    );
+    content = <StartupLoader />;
   }
 
   if (bootstrapState.status === "error") {

@@ -8,13 +8,100 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=Poppins:wght@500&display=swap"
-      rel="stylesheet"
+      rel="preload"
+      as="style"
+      onload="this.onload=null;this.rel='stylesheet'"
     />
 
     <title>Kino XII</title>
+    <!-- Critical startup styles also style React's bootstrap placeholder. -->
+    <style>
+      body { margin: 0; background: #070c1c; }
+      .startup-loader {
+        box-sizing: border-box;
+        display: flex;
+        min-height: 100vh;
+        min-height: 100svh;
+        padding: 32px 24px;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+        background: #070c1c;
+        color: #a9a9a9;
+        font-family: "Archivo", Arial, sans-serif;
+        text-align: center;
+      }
+      .startup-loader__brand {
+        display: flex;
+        gap: 8px;
+        margin: 0;
+        color: #fff;
+        font-size: 32px;
+        font-weight: 800;
+        line-height: 1.1;
+      }
+      .startup-loader__accent { color: #ec3013; }
+      .startup-loader__indicator {
+        box-sizing: border-box;
+        width: 24px;
+        height: 24px;
+        border: 2px solid #2a2c3d;
+        border-top-color: #ec3013;
+        border-radius: 50%;
+        animation: startup-spin 0.9s linear infinite;
+      }
+      .startup-loader__message {
+        max-width: 32ch;
+        margin: 0;
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+      .startup-loader--error .startup-loader__indicator { display: none; }
+      @keyframes startup-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        .startup-loader__indicator { animation: none; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="startup-loader" data-startup-static role="status" aria-live="polite" aria-atomic="true">
+        <p class="startup-loader__brand" aria-hidden="true">KINO <span class="startup-loader__accent">XII</span></p>
+        <span class="startup-loader__indicator" aria-hidden="true"></span>
+        <p class="startup-loader__message">Loading Kino XII...</p>
+        <noscript>
+          <style>.startup-loader__indicator, .startup-loader__message { display: none; }</style>
+          <p>JavaScript is required to open Kino XII.</p>
+        </noscript>
+      </main>
+    </div>
+    <script>
+      // Keep module download/evaluation failures visible before React takes over.
+      (() => {
+        const root = document.getElementById("root");
+        const shell = root.querySelector("[data-startup-static]");
+        function showStartupFailure(event) {
+          if (!shell.isConnected || shell.classList.contains("startup-loader--error")) return;
+          if (event.type === "error" && !(event instanceof ErrorEvent) && !(event.target instanceof HTMLScriptElement)) return;
+          shell.classList.add("startup-loader--error");
+          shell.setAttribute("role", "alert");
+          shell.setAttribute("aria-live", "assertive");
+          shell.querySelector(".startup-loader__message").textContent = "Kino XII couldn't start. Please refresh to try again.";
+        }
+        window.addEventListener("error", showStartupFailure, true);
+        window.addEventListener("unhandledrejection", showStartupFailure);
+        const observer = new MutationObserver(() => {
+          if (shell.isConnected) return;
+          window.removeEventListener("error", showStartupFailure, true);
+          window.removeEventListener("unhandledrejection", showStartupFailure);
+          observer.disconnect();
+        });
+        observer.observe(root, { childList: true });
+      })();
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
