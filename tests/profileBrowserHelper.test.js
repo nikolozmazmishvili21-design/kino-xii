@@ -384,7 +384,33 @@ test("command timeout is configurable and invalid timer values are rejected befo
   const count = h.requests.length;
   for (const value of [0, -1, Infinity, NaN, 1.5, 2147483648]) {
     await assert.rejects(h.connect({ commandTimeoutMs: value }), RangeError);
+    await assert.rejects(h.connect({ navigationTimeoutMs: value }), RangeError);
     await assert.rejects(h.connect({ connectionTimeoutMs: value }), RangeError);
   }
   assert.equal(h.requests.length, count);
+});
+
+test("navigation budget is bounded separately without changing other command timeouts or retrying", async t => {
+  const h = fixture(t), browser = await h.connect({ navigationTimeoutMs: 15000 });
+  const navigation = browser.send("Page.navigate", { url: "http://fixture.test" });
+  const navigationId = h.last().id, navigationTimer = [...h.timers.keys()][0];
+  const rejected = assert.rejects(navigation, /Page.navigate .*timed out after 15000ms/);
+  assert.equal(h.timers.get(navigationTimer).delay, 15000);
+  for (const method of ["Runtime.evaluate", "Page.reload"]) {
+    const command = browser.send(method), id = h.last().id;
+    assert.equal([...h.timers.values()].at(-1).delay, 50);
+    h.socket.respond(id); await command;
+  }
+  h.fire(navigationTimer); await rejected;
+  h.socket.respond(navigationId); await flush();
+  assert.equal(h.sent.filter(command => command.method === "Page.navigate").length, 1);
+  assert.equal(h.timers.size, 0);
+  await browser.close();
+});
+
+test("navigation keeps the existing command budget when no navigation override is supplied", async t => {
+  const h = fixture(t), browser = await h.connect({ commandTimeoutMs: 123 });
+  const navigation = browser.send("Page.navigate"), id = h.last().id;
+  assert.equal([...h.timers.values()][0].delay, 123);
+  h.socket.respond(id); await navigation; await browser.close();
 });

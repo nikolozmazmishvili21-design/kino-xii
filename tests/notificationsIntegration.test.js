@@ -33,7 +33,8 @@ before(async () => {
 after(async () => { await server?.close(); });
 
 async function fixture({ guest = false, width = 1920, movies = [29, 32, 26, 25].map(id => movie(id)), pauseRead = false, ignoreAbort = false, pauseLogin = false } = {}) {
-  const browser = await connectProfileBrowser(endpoint);
+  // Cold Home navigation can exceed 5s; keep all other CDP commands at 5s.
+  const browser = await connectProfileBrowser(endpoint, { navigationTimeoutMs: 15000 });
   const calls = { posts: [], gets: [], previews: [], logins: [], registrations: [], forbidden: [], exceptions: [] }, tasks = new Set(), errors = [];
   const requestWaiters = new Set();
   const record = (kind, event) => {

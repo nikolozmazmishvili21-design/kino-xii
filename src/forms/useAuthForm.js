@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { getAuthFormErrors } from "./authFormErrors.js";
 
 // Shared auth-only form lifecycle; API mutations stay in AuthProvider.
-export default function useAuthForm({ initialFields, validate, submit, mutation, onSuccess, failureMessage }) {
+export default function useAuthForm({ initialFields, validate, submit, mutation, onSuccess, failureMessage,
+  feedbackOnSubmit = false, indicateAuthRejection = false }) {
   const [fields, setFields] = useState(initialFields);
   const [touched, setTouched] = useState({});
   const [serverErrors, setServerErrors] = useState({});
   const [avatarSelectionError, setAvatarSelectionError] = useState(null);
   const [message, setMessage] = useState("");
+  const [authRejected, setAuthRejected] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const inFlight = useRef(false);
   const mounted = useRef(false);
@@ -36,8 +39,10 @@ export default function useAuthForm({ initialFields, validate, submit, mutation,
     if (inFlight.current || mutation !== null) return;
     engagedFields.current[name] = true;
     setFields((current) => ({ ...current, [name]: value }));
-    setServerErrors((current) => ({ ...current, [name]: undefined }));
+    setServerErrors((current) => feedbackOnSubmit ? {} : { ...current, [name]: undefined });
     setMessage("");
+    setAuthRejected(false);
+    if (feedbackOnSubmit) setSubmitAttempted(false);
     if (name === "avatar") {
       setTouched((current) => ({ ...current, avatar: true }));
       setAvatarSelectionError(selectionError);
@@ -62,7 +67,8 @@ export default function useAuthForm({ initialFields, validate, submit, mutation,
   }
 
   function fieldProps(name) {
-    const error = serverErrors[name] || (touched[name] ? localErrors[name] : null);
+    const showFeedback = !feedbackOnSubmit || submitAttempted;
+    const error = serverErrors[name] || (showFeedback && touched[name] ? localErrors[name] : null);
     return {
       value: fields[name],
       onChange: handleChange,
@@ -72,7 +78,7 @@ export default function useAuthForm({ initialFields, validate, submit, mutation,
       readOnly: pending,
       required: true,
       error,
-      success: Boolean(touched[name] && !localErrors[name] && !serverErrors[name]),
+      success: Boolean(showFeedback && touched[name] && !localErrors[name] && !serverErrors[name]),
     };
   }
 
@@ -80,6 +86,7 @@ export default function useAuthForm({ initialFields, validate, submit, mutation,
     event.preventDefault();
     if (inFlight.current || mutation !== null) return;
     const submittedForm = event.currentTarget;
+    if (feedbackOnSubmit) setSubmitAttempted(true);
 
     const errors = validate(fields);
     setTouched(Object.fromEntries(Object.keys(fields).map((name) => [name, true])));
@@ -90,10 +97,14 @@ export default function useAuthForm({ initialFields, validate, submit, mutation,
     }
 
     inFlight.current = true;
+    // Login's local checks end when authentication starts; server field errors
+    // remain independent so a failed request cannot revive green credentials.
+    if (feedbackOnSubmit) setSubmitAttempted(false);
     setSubmitting(true);
     errorForm.current = null;
     setServerErrors({});
     setMessage("");
+    setAuthRejected(false);
 
     let user;
     try {
@@ -104,6 +115,7 @@ export default function useAuthForm({ initialFields, validate, submit, mutation,
         errorForm.current = Object.keys(feedback.fieldErrors).length ? submittedForm : null;
         setServerErrors(feedback.fieldErrors);
         setMessage(feedback.message);
+        setAuthRejected(indicateAuthRejection && error.status === 401);
       }
       return;
     } finally {
@@ -123,6 +135,7 @@ export default function useAuthForm({ initialFields, validate, submit, mutation,
     pending,
     valid,
     message,
+    authRejected,
     avatarError: serverErrors.avatar || avatarSelectionError || (touched.avatar ? localErrors.avatar : null),
   };
 }

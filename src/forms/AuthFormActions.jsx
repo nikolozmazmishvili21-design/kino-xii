@@ -1,8 +1,13 @@
-export default function AuthFormActions({ mode, onSwitchMode, disabled = true, pending = false, message }) {
+import errorIcon from "../assets/icons/input-error.svg";
+
+export default function AuthFormActions({ mode, onSwitchMode, disabled = true, pending = false, message, messageId, showErrorIcon = false }) {
   const isSignup = mode === "signup";
   return (
     <div className="auth-form__actions">
-      {message && <p className="auth-form__error" role="alert">{(Array.isArray(message) ? message : [message]).map((text, index) => <span className="form-field__error-message" key={index}>{text}</span>)}</p>}
+      {message && <p className={`auth-form__error${showErrorIcon ? " auth-form__error--with-icon" : ""}`} id={messageId} role="alert">
+        {showErrorIcon && <span className="auth-form__error-icon" aria-hidden="true"><img src={errorIcon} alt="" /></span>}
+        <span>{(Array.isArray(message) ? message : [message]).map((text, index) => <span className="form-field__error-message" key={index}>{text}</span>)}</span>
+      </p>}
       <button type="submit" className="button button--primary auth-form__submit" disabled={disabled || pending}>
         {pending ? (isSignup ? "Signing up…" : "Logging in…") : (isSignup ? "Sign up" : "Log in")}
       </button>

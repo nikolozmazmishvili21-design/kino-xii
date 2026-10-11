@@ -1,6 +1,6 @@
 // Only connect to an explicitly supplied disposable Chrome, never a user browser.
 // Five seconds bounds a lost protocol reply below the fixtures' 10-second UI
-// waits. Slow QA hosts can override commandTimeoutMs / connectionTimeoutMs.
+// waits. Cold navigation can use a separate budget without relaxing other commands.
 const DEFAULT_TIMEOUT_MS = 5000;
 
 class SocketClosedError extends Error {
@@ -10,7 +10,7 @@ class SocketClosedError extends Error {
   }
 }
 
-function connection(socket, { commandTimeoutMs, connectionTimeoutMs, setTimer, clearTimer }) {
+function connection(socket, { commandTimeoutMs, navigationTimeoutMs, connectionTimeoutMs, setTimer, clearTimer }) {
   let sequence = 0, terminalError, openingTimer, rejectOpening, closingSocket = false;
   let closeEvent, emptyErrorDuringPageClose;
   const pending = new Map(), handlers = new Map(), tasks = new Set(), handlerErrors = [];
@@ -84,7 +84,8 @@ function connection(socket, { commandTimeoutMs, connectionTimeoutMs, setTimer, c
       }
       return new Promise((resolve, reject) => {
         const id = ++sequence;
-        const timer = setTimer(() => settle(id, new Error(`CDP ${method} (id ${id}) timed out after ${commandTimeoutMs}ms.`)), commandTimeoutMs);
+        const timeoutMs = method === "Page.navigate" ? navigationTimeoutMs : commandTimeoutMs;
+        const timer = setTimer(() => settle(id, new Error(`CDP ${method} (id ${id}) timed out after ${timeoutMs}ms.`)), timeoutMs);
         pending.set(id, { resolve, reject, timer, method });
         try { socket.send(JSON.stringify({ id, method, params })); }
         catch (error) { disconnect(error); }
@@ -103,13 +104,14 @@ function connection(socket, { commandTimeoutMs, connectionTimeoutMs, setTimer, c
 
 export async function connectProfileBrowser(endpoint, {
   commandTimeoutMs = DEFAULT_TIMEOUT_MS,
+  navigationTimeoutMs = commandTimeoutMs,
   connectionTimeoutMs = DEFAULT_TIMEOUT_MS,
   fetch: fetchTarget = fetch,
   WebSocket: Socket = WebSocket,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
 } = {}) {
-  for (const value of [commandTimeoutMs, connectionTimeoutMs]) {
+  for (const value of [commandTimeoutMs, navigationTimeoutMs, connectionTimeoutMs]) {
     if (!Number.isInteger(value) || value <= 0 || value > 2147483647) throw new RangeError("CDP timeouts must be positive timer-safe integers.");
   }
   const request = async (path, options) => {
@@ -128,7 +130,7 @@ export async function connectProfileBrowser(endpoint, {
   };
   let cdp;
   try {
-    cdp = connection(new Socket(target.webSocketDebuggerUrl), { commandTimeoutMs, connectionTimeoutMs, setTimer, clearTimer });
+    cdp = connection(new Socket(target.webSocketDebuggerUrl), { commandTimeoutMs, navigationTimeoutMs, connectionTimeoutMs, setTimer, clearTimer });
     await cdp.ready;
     await cdp.send("Page.enable");
     await cdp.send("Runtime.enable");

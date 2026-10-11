@@ -74,6 +74,20 @@
   gap: 24px;
 }
 
+/* Chrome forces both background and color in its UA autofill stylesheet.
+   Paint the Figma surface over it and explicitly restore field text colors. */
+.auth-form .form-field__input:is(:autofill, :-webkit-autofill) {
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1000px var(--color-surface);
+  -webkit-text-fill-color: var(--color-text);
+  caret-color: var(--color-text);
+}
+
+.auth-form .form-field--error .form-field__input:is(:autofill, :-webkit-autofill) {
+  -webkit-text-fill-color: var(--color-accent);
+  caret-color: var(--color-accent);
+}
+
 .auth-form__passwords {
   display: flex;
   gap: 12px;
@@ -98,6 +112,21 @@
   font-weight: 600;
   line-height: 16px;
   overflow-wrap: anywhere;
+}
+
+.auth-form__error--with-icon {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.auth-form__error-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  height: 16px;
+  pointer-events: none;
 }
 
 .auth-form__switch {
