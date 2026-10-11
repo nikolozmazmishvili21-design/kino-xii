@@ -276,6 +276,10 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
+.coming-soon-card:hover {
+  cursor: pointer;
+}
+
 .coming-soon-card > .movie-image {
   flex: 0 0 229px;
   height: 136px;
@@ -322,6 +326,7 @@
 }
 
 .coming-soon-card__notify {
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
